@@ -1,0 +1,8 @@
+{
+  "name": "meterdoor-integration",
+  "private": true,
+  "type": "module",
+  "description": "Tests gegen echte Gegenstellen: Stripe-Testmodus und Base Sepolia mit unabhängigem x402-Client (x402-fetch). Schlüssel nur aus .secrets/.",
+  "scripts": { "test": "node --test integration.test.js" },
+  "devDependencies": { "express": "^4.21.0", "x402-fetch": "1.2.0", "viem": "^2.21.26" }
+}
