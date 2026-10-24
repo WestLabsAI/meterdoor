@@ -1,4 +1,4 @@
-# Meterdoor (prototype 0.0.3)
+# Meterdoor (prototype 0.0.4)
 
 [Deutsch](README.md) · [Website](https://meterdoor.com)
 
@@ -35,6 +35,29 @@ app.listen(process.env.PORT || 3000);
 ```
 
 Use a Stripe **test** key (`sk_test_…` / `rk_test_…`). Mainnet `base` requires the explicit option `x402.allowMainnet: true`.
+Checkout sessions are created with Stripe Managed Payments off (`managed_payments[enabled]=false`), because added tax would change the
+amount that is verified; optional `stripe.taxCode` sets the line item's tax code, `stripe.managedPayments: true` omits the parameter.
+
+## Demo without keys
+
+```
+npm install
+npm run demo
+```
+
+Starts a local server on `http://127.0.0.1:8402/` (127.0.0.1 only, stops after 10 minutes; set `PORT` / `MAX_MS` to change).
+The page shows: **payment required** (`402` with both paths), **euro** via a local, simulated checkout up to access by cookie,
+**x402** with a simulated agent (response incl. `X-PAYMENT-RESPONSE`), **replay** (same proof → stored response, no second
+settlement) and **unclear settlement** (settle response lost → `503`, resolved on the next attempt via `authorizationState`).
+
+**Everything is simulated:** Stripe, the facilitator and the RPC are emulated in the same process (`demo/simulation.js`); no
+money moves and nothing leaves your machine. Every page carries the banner "SIMULATION – keine echte Zahlung" (no real payment),
+every JSON response the field `simulation: true`, every response the header `X-Meterdoor-Simulation: 1`. The middleware is
+unchanged. If environment variables look like real credentials (e.g. `STRIPE_*`, `WALLET`, `PRIVATE_KEY`, values such as
+`sk_live_…`/`rk_live_…` or `0x` + 64 hex characters), the demo refuses to start.
+
+Browser test: `npm run test:demo` (Playwright with a locally installed Edge or Chrome, no browser download; requests to hosts
+other than 127.0.0.1 are aborted and must stay at 0).
 
 ## What a purchase means
 

@@ -38,6 +38,8 @@ test("Browser wird zu Stripe Checkout weitergeleitet, mit Metadaten und Kennung"
   assert.equal(form.get("metadata[pw_resource]"), "GET /api/bericht");
   assert.equal(form.get("metadata[pw_ttl]"), "3600");
   assert.match(form.get("metadata[pw_id]"), /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(form.get("managed_payments[enabled]"), "false");
+  assert.equal(form.get("line_items[0][price_data][product_data][tax_code]"), null);
   await app.close();
 });
 

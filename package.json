@@ -1,6 +1,6 @@
 {
   "name": "meterdoor",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "description": "Express-Middleware: ein Endpunkt, Euro per Stripe Checkout für Menschen und USDC per x402 für KI-Agenten (Prototyp)",
   "type": "module",
@@ -9,12 +9,15 @@
   "license": "Apache-2.0",
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "demo": "node demo/server.js",
+    "test:demo": "node --test demo/demo.e2e.test.js"
   },
   "peerDependencies": {
     "express": ">=4.18"
   },
   "devDependencies": {
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "playwright-core": "^1.64.1"
   }
 }

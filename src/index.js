@@ -270,6 +270,10 @@ export function paywall(options) {
       "line_items[0][price_data][currency]": "eur",
       "line_items[0][price_data][unit_amount]": String(centsEur),
       "line_items[0][price_data][product_data][name]": description || fullPath(req),
+      ...(stripe.taxCode ? { "line_items[0][price_data][product_data][tax_code]": String(stripe.taxCode) } : {}),
+      // Managed Payments würde Steuer aufschlagen und den Betrag ändern (checkSession prüft amount_total) – daher aus,
+      // außer ausdrücklich gewünscht. Konten mit Managed Payments als Standard lehnen sonst ab („product tax code is missing“).
+      ...(stripe.managedPayments ? {} : { "managed_payments[enabled]": "false" }),
       success_url: withParam(resourceUrl(req), "pw_session={CHECKOUT_SESSION_ID}"),
       cancel_url: resourceUrl(req),
       ...(stripe.metadata ? Object.fromEntries(Object.entries(stripe.metadata).map(([k, v]) => [`metadata[${k}]`, String(v)])) : {}),

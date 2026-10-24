@@ -1,4 +1,4 @@
-# Meterdoor (Prototyp 0.0.3)
+# Meterdoor (Prototyp 0.0.4)
 
 [English](README.en.md)
 
@@ -34,6 +34,28 @@ app.listen(process.env.PORT || 3000);
 
 Derselbe Code steht auf der Website; `test/website-beispiel.test.js` startet ihn. Quelle: `beispiel/schnellstart.js`,
 Übertrag auf die Seite mit `node werkzeuge/site-beispiel.js`.
+
+## Demo ohne Schlüssel
+
+```
+npm install
+npm run demo
+```
+
+Öffnet einen lokalen Server auf `http://127.0.0.1:8402/` (nur 127.0.0.1, endet nach 10 Minuten; `PORT` und `MAX_MS`
+änderbar). Die Seite zeigt: **Zahlung erforderlich** (`402` mit beiden Wegen), **Euro** über einen lokalen, simulierten
+Checkout bis zur Freischaltung per Cookie, **x402** mit einem simulierten Agenten (Antwort inkl. `X-PAYMENT-RESPONSE`),
+**Wiederholung** (gleicher Nachweis → gespeicherte Antwort, keine zweite Abrechnung) und **unklare Abrechnung**
+(Settle-Antwort geht verloren → `503`, beim nächsten Versuch Klärung über `authorizationState`).
+
+**Alles ist simuliert:** Stripe, Facilitator und RPC laufen nachgebildet im selben Prozess (`demo/simulation.js`), es fließt
+kein Geld und nichts verlässt den Rechner. Jede Seite trägt das Banner „SIMULATION – keine echte Zahlung“, jede JSON-Antwort
+das Feld `simulation: true`, jede Antwort die Kopfzeile `X-Meterdoor-Simulation: 1`. Die Middleware ist unverändert.
+Sind Umgebungsvariablen gesetzt, die nach echten Zugängen aussehen (z. B. `STRIPE_*`, `WALLET`, `PRIVATE_KEY`,
+Werte wie `sk_live_…`/`rk_live_…` oder `0x` + 64 Hex-Zeichen), startet die Demo nicht.
+
+Browser-Test: `npm run test:demo` (Playwright mit lokal installiertem Edge oder Chrome, kein Browser-Download, Anfragen an
+andere Hosts als 127.0.0.1 werden abgebrochen und müssen 0 bleiben).
 
 ## Was ein Kauf bedeutet
 
@@ -90,6 +112,9 @@ Beim Einlösen wird die Sitzung mit `line_items` und `payment_intent.latest_char
 `status=complete`, `payment_status=paid`, `currency=eur`, `amount_total` = `amount_subtotal` = Preis, genau eine Position mit
 Menge 1, PaymentIntent `succeeded` mit vollem Betrag, passende Ressource und `pw_id`, Test-/Livemodus passend zum Schlüssel.
 Unbekannte Sitzung (z. B. aus einem anderen Konto) → 402. Ändern Sie den Preis, lassen sich ältere Sitzungen nicht mehr einlösen.
+Stripe Managed Payments ist für die Sitzung ausgeschaltet (`managed_payments[enabled]=false`), weil aufgeschlagene Steuer den Betrag
+ändern würde; Konten mit Managed Payments als Standard lehnen sonst mit „product tax code is missing“ ab. Optional: `stripe.taxCode`
+(Steuercode der Position), `stripe.managedPayments: true` (Parameter weglassen).
 
 **Zugangsdauer.** Beginn = Zeitpunkt der Belastung (`latest_charge.created`), Ende = Beginn + gekaufte Dauer. Token-Format
 `v2.<ende>.<ressource>.<hmac>`; Tokens des Formats `v1` werden abgelehnt.
