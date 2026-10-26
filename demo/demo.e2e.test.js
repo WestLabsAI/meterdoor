@@ -50,6 +50,21 @@ after(async () => {
 });
 
 const zusammenfassung = () => page.locator("#zusammenfassung");
+const karte = () => page.locator("#ergebnis-karte");
+let aufrufNrX402;
+// Ergebnis in Alltagssprache: Art, Titel und Kennzahlen stehen sichtbar oberhalb der JSON-Daten.
+async function ergebnis() {
+  return {
+    art: await karte().getAttribute("data-art"),
+    titel: await page.locator("#ergebnis-titel").innerText(),
+    text: await page.locator("#ergebnis-text").innerText(),
+    zahlen: await page.locator("#ergebnis-zahlen").innerText(),
+    naechste: await page.locator("#naechste-aktion button").count(),
+    jsonOffen: await page.locator("#ausgabe details[open]").count(),
+    jsonGesamt: await page.locator("#ausgabe details").count(),
+    sichtbar: await karte().isVisible(),
+  };
+}
 async function szenario(id) {
   const antwort = page.waitForResponse((r) => r.url().includes("/demo/agent/"));
   await page.click(`#knopf-${id}`);
@@ -79,6 +94,17 @@ test("Zahlung erforderlich: 402 mit beiden Wegen", async () => {
   assert.equal(s.antwort.accepts[0].network, "base-sepolia");
   assert.match(s.antwort.checkout, /pw_checkout=1/);
   assert.equal(await zusammenfassung().getAttribute("data-letzter-status"), "402");
+  const e = await ergebnis();
+  assert.equal(e.art, "zahlung-erforderlich");
+  assert.ok(e.sichtbar);
+  assert.match(e.titel, /Zahlung erforderlich/);
+  assert.match(e.zahlen, /HTTP 402 Payment Required/);
+  assert.match(e.zahlen, /Simulierte Abrechnungen in diesem Durchlauf\s+0/);
+  assert.equal(e.naechste, 1, "passende nächste Aktion");
+  assert.equal(e.jsonGesamt, 1, "JSON je Schritt aufklappbar");
+  assert.equal(e.jsonOffen, 0, "JSON ist zunächst zugeklappt");
+  assert.equal(await zusammenfassung().getAttribute("aria-live"), "polite");
+  assert.equal(await page.locator("#ergebnis").getAttribute("aria-busy"), "false");
 });
 
 test("Euro-Weg: simulierter Checkout bis zur Freischaltung", async () => {
@@ -95,6 +121,9 @@ test("Euro-Weg: simulierter Checkout bis zur Freischaltung", async () => {
   await page.waitForURL(`${demo.url}/api/bericht`);
   assert.ok(await page.locator("#freigeschaltet").isVisible());
   assert.ok(await page.locator("#simulation-banner").isVisible());
+  assert.match(await page.locator("#freigeschaltet").innerText(), /freigeschaltet/);
+  // Vollständige JSON-Antwort steht aufklappbar unter dem Ergebnis.
+  await page.locator("details.json summary").click();
   const bericht = JSON.parse(await page.locator("#bericht").innerText());
   assert.equal(bericht.simulation, true);
   assert.equal(bericht.bezahltMit.method, "stripe-token");
@@ -124,7 +153,15 @@ test("x402-Weg: simulierter Agent zahlt, X-PAYMENT-RESPONSE wird angezeigt", asy
   assert.equal(s.antwort.bezahltMit.method, "x402");
   assert.equal(d.abrechnungen, 1);
   assert.equal(await zusammenfassung().getAttribute("data-letzter-status"), "200");
-  assert.match(await page.locator("#ausgabe").innerText(), /x-payment-response/);
+  assert.match(await page.locator("#ausgabe").textContent(), /x-payment-response/);
+  assert.match(await page.locator("#ausgabe").innerText(), /mit X-PAYMENT-RESPONSE/);
+  const e = await ergebnis();
+  assert.equal(e.art, "bezahlt");
+  assert.match(e.titel, /Bezahlt und ausgeliefert/);
+  assert.match(e.zahlen, /HTTP 200 OK/);
+  assert.match(e.zahlen, /Simulierte Abrechnungen in diesem Durchlauf\s+1/);
+  aufrufNrX402 = s.antwort.aufrufNr;
+  assert.match(e.text, new RegExp("Aufruf Nr. " + aufrufNrX402 + " "));
 });
 
 test("Wiederholung: gespeicherte Antwort, keine zweite Abrechnung", async () => {
@@ -135,6 +172,14 @@ test("Wiederholung: gespeicherte Antwort, keine zweite Abrechnung", async () => 
   assert.equal(demo.sim.settlements, vorher);
   assert.equal(d.schritte[0].xPaymentResponse.success, true);
   assert.equal(await zusammenfassung().getAttribute("data-abrechnungen"), "0");
+  // Nachvollziehbar ohne JSON: eigene Art, keine Abrechnung, dieselbe Aufrufnummer wie die bezahlte Antwort.
+  assert.equal(d.schritte[0].antwort.aufrufNr, aufrufNrX402, "Route lief nicht erneut");
+  const e = await ergebnis();
+  assert.equal(e.art, "wiederholung");
+  assert.match(e.titel, /keine neue Abrechnung/);
+  assert.match(e.text, new RegExp("Aufruf Nr. " + aufrufNrX402 + ", die Route lief nicht erneut"));
+  assert.match(e.zahlen, /Simulierte Abrechnungen in diesem Durchlauf\s+0/);
+  assert.match(await page.locator("#ausgabe").innerText(), /keine Abrechnung dabei/);
 });
 
 test("Unklare Abrechnung: 503, dann Klärung über RPC, genau eine Abrechnung", async () => {
@@ -145,6 +190,79 @@ test("Unklare Abrechnung: 503, dann Klärung über RPC, genau eine Abrechnung", 
   assert.equal(d.schritte[2].xPaymentResponse.success, true);
   assert.equal(d.abrechnungen, 1);
   assert.ok(demo.sim.calls.some((c) => c.url.startsWith("https://rpc.simulation.invalid")), "RPC wurde befragt");
+  const e = await ergebnis();
+  assert.equal(e.art, "unklar");
+  assert.match(e.titel, /Unklare Abrechnung geklärt/);
+  assert.match(e.text, /503/);
+  assert.match(e.zahlen, /Simulierte Abrechnungen in diesem Durchlauf\s+1/);
+  assert.equal(e.jsonGesamt, 3);
+  // Zahlung, Wiederholung und unklare Abrechnung sind ohne JSON unterscheidbar (eigene Art und eigenes Etikett).
+  assert.match(await page.locator("#ergebnis-art").innerText(), /Unklare Abrechnung/);
+});
+
+test("Nächste Aktion im Ergebnis startet das folgende Szenario", async () => {
+  // Nach "unklar" schlägt die Demo "Von vorn: ohne Zahlung abrufen" vor.
+  const antwort = page.waitForResponse((r) => r.url().endsWith("/demo/agent/ohne-zahlung"));
+  await page.click("#naechste-knopf");
+  await antwort;
+  await page.waitForFunction(() => document.querySelector("#ergebnis-karte").dataset.art === "zahlung-erforderlich");
+});
+
+test("Tastatur: Szenario per Tab und Enter, Fokus springt zum Ergebnis", async () => {
+  await page.goto(`${demo.url}/`);
+  await page.focus("#knopf-ohne-zahlung");
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "knopf-ohne-zahlung");
+  const antwort = page.waitForResponse((r) => r.url().includes("/demo/agent/"));
+  await page.keyboard.press("Enter");
+  await antwort;
+  await page.waitForFunction(() => document.querySelector("#ergebnis").getAttribute("aria-busy") === "false");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "ergebnis-h");
+  // Nächster Tab-Halt nach dem Ergebnis-Kopf ist die vorgeschlagene nächste Aktion.
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "naechste-knopf");
+});
+
+test("Kleiner Bildschirm (390 px, reduzierte Bewegung): Ergebnis nach der Aktion im Blickfeld", async () => {
+  const p = await context.newPage();
+  await p.emulateMedia({ reducedMotion: "reduce" });
+  await p.setViewportSize({ width: 390, height: 844 });
+  await p.goto(`${demo.url}/`);
+  const antwort = p.waitForResponse((r) => r.url().includes("/demo/agent/"));
+  await p.click("#knopf-x402");
+  await antwort;
+  await p.waitForFunction(() => document.querySelector("#ergebnis").getAttribute("aria-busy") === "false");
+  const box = await p.locator("#ergebnis-karte").boundingBox();
+  assert.ok(box && box.y >= 0 && box.y < 844, `Ergebnis-Karte sichtbar (y=${box && box.y})`);
+  assert.ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "kein waagerechtes Scrollen");
+  assert.ok(await p.locator("#simulation-banner").isVisible());
+  await p.close();
+});
+
+test("Lade- und Fehlerzustand sichtbar und zugänglich", async () => {
+  const p = await context.newPage();
+  await p.goto(`${demo.url}/`);
+  // Ladezustand: Antwort künstlich verzögern (nur lokal, keine Anfrage nach außen).
+  let freigeben;
+  const gehalten = new Promise((ok) => { freigeben = ok; });
+  await p.route("**/demo/agent/ohne-zahlung", async (route) => { await gehalten; await route.continue(); });
+  await p.click("#knopf-ohne-zahlung");
+  await p.waitForFunction(() => document.querySelector("#ergebnis").getAttribute("aria-busy") === "true");
+  assert.match(await p.locator("#zusammenfassung").innerText(), /Läuft/);
+  assert.equal(await p.locator("#ergebnis-karte").getAttribute("data-art"), "laeuft");
+  assert.ok(await p.locator("#knopf-x402").isDisabled(), "Knöpfe gesperrt, solange es läuft");
+  freigeben();
+  await p.waitForFunction(() => document.querySelector("#ergebnis").getAttribute("aria-busy") === "false");
+  assert.equal(await p.locator("#ergebnis-karte").getAttribute("data-art"), "zahlung-erforderlich");
+  await p.unroute("**/demo/agent/ohne-zahlung");
+  // Fehlerzustand: Verbindung zur Demo bricht ab.
+  await p.route("**/demo/agent/x402", (route) => route.abort("connectionrefused"));
+  await p.click("#knopf-x402");
+  await p.waitForFunction(() => document.querySelector("#ergebnis-karte").dataset.art === "fehler");
+  assert.match(await p.locator("#zusammenfassung").innerText(), /^Fehler: .*npm run demo/);
+  assert.ok(!(await p.locator("#knopf-x402").isDisabled()), "Knöpfe nach Fehler wieder bedienbar");
+  await p.close();
 });
 
 test("Kein Internetzugriff: keine Anfrage musste abgebrochen werden", () => {

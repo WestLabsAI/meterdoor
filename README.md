@@ -1,14 +1,53 @@
-# Meterdoor (Prototyp 0.0.4)
+# Meterdoor (Prototyp 0.0.7)
 
-[English](README.en.md)
+[English](README.en.md) · [Website](https://meterdoor.com)
 
 Express-Middleware: **ein Endpunkt, zwei Bezahlwege.** Menschen im Browser zahlen in Euro über Stripe Checkout,
-KI-Agenten zahlen in USDC über [x402](https://www.x402.org/) (Version 1, Schema `exact`). Das Geld geht direkt an Ihr
-Stripe-Konto bzw. Ihre Wallet; die Bibliothek verwahrt, tauscht oder leitet nichts weiter.
+KI-Agenten zahlen in USDC über [x402](https://www.x402.org/) (Version 1 und 2, Schema `exact` mit EIP-3009). Abgewickelt wird über Ihr
+Stripe-Konto bzw. einen x402-Facilitator; das Geld geht direkt an Sie. Meterdoor selbst verwahrt, tauscht oder leitet kein
+Geld weiter.
 
-> Status: Prototyp, Quellcode öffentlich, noch nicht auf npm (Installation aus dem Repo). Getestet mit nachgebildeten Gegenstellen (`npm test`, inkl. Fehlerfällen) und gegen den
-> öffentlichen Testnetz-Facilitator (`integration/`). Echte Testzahlungen (Stripe-Testmodus, Base Sepolia) stehen noch aus.
+> Status: Prototyp für das Testnetz Base Sepolia und den Stripe-Testmodus. Quellcode öffentlich, **kein npm-Paket
+> veröffentlicht** (Installation aus diesem Repository). Stand der Prüfungen siehe [Funktionsübersicht](#funktionsübersicht).
 > Kein Teil eines offiziellen x402-, Coinbase- oder Stripe-Produkts.
+
+## Schnellstart
+
+Voraussetzungen: Node.js 20 oder neuer mit npm, Git. Installation, Demo und Einbindung sind getrennte Schritte; für die
+Demo brauchen Sie keine Konten und keine Schlüssel.
+
+### 1. Installieren (aus dem Repository)
+
+```
+git clone https://github.com/WestLabsAI/meterdoor
+cd meterdoor
+npm install
+```
+
+### 2. Lokale Demo ohne Schlüssel
+
+Im Ordner `meterdoor`:
+
+```
+npm run demo
+```
+
+Dann `http://127.0.0.1:8402/` im Browser öffnen. Alles ist simuliert, es fließt kein Geld; Einzelheiten unter
+[Demo ohne Schlüssel](#demo-ohne-schlüssel).
+
+### 3. In eine eigene Express-App einbinden
+
+Meterdoor ist ein **ES-Modul**: Ihr `package.json` braucht `"type": "module"` (oder die Datei endet auf `.mjs`).
+Geprüft mit Node.js 20.20, 22.23 und 24.19 und Express 4.22 (alle Tests); Express 5.3 nur mit der Paket-Probe
+(`npm run test:paket -- --express 5`). Im Ordner Ihrer App, der neben dem geklonten Ordner `meterdoor` liegt:
+
+```
+npm init -y                  # nur bei einer neuen App
+npm pkg set type=module
+npm install express@4 ../meterdoor
+```
+
+`server.js` (derselbe Code steht auf der Website; Preise sind Beispielwerte):
 
 ```js
 import express from "express";
@@ -32,8 +71,85 @@ app.get("/api/bericht",
 app.listen(process.env.PORT || 3000);
 ```
 
-Derselbe Code steht auf der Website; `test/website-beispiel.test.js` startet ihn. Quelle: `beispiel/schnellstart.js`,
-Übertrag auf die Seite mit `node werkzeuge/site-beispiel.js`.
+Umgebungsvariablen, z. B. in einer Datei `.env` (nicht einchecken):
+
+| Variable | Bedeutung |
+|---|---|
+| `STRIPE_KEY` | Stripe-Testschlüssel `sk_test_…` oder `rk_test_…`; nur nötig, wenn `price.eur` gesetzt ist |
+| `WALLET` | Ihre Empfangsadresse auf Base Sepolia; nur nötig, wenn `price.usdc` gesetzt ist |
+| `ACCESS_SECRET` | lange Zufallszeichenkette, signiert die Zugangstoken des Euro-Wegs; nötig mit `price.eur` |
+| `PORT` | optional, Standard 3000 |
+
+```
+node --env-file=.env server.js
+curl -H "Accept: application/json" http://localhost:3000/api/bericht
+```
+
+`--env-file` gibt es ab Node 20.6; sonst die Variablen in der Shell setzen. In Windows PowerShell heißt der Aufruf
+`curl.exe`. Erwartet: `402` mit `accepts` (x402) und `checkout`-Link. Im Browser leitet derselbe Aufruf zu Stripe Checkout
+im Testmodus weiter; dafür muss der Testschlüssel gültig sein. In einer bestehenden App genügen Import und `paywall()`-Block
+vor Ihrer Route; hinter einem Proxy zusätzlich `app.set("trust proxy", 1)`.
+
+Der Code oben ist `beispiel/schnellstart.js`; `test/schnellstart.test.js` startet ihn bei jedem `npm test` und prüft
+`402`, Zahlungsanforderung und Checkout-Link. Wer den Code auf einer eigenen Seite zeigt, gleicht ihn mit
+`node werkzeuge/site-beispiel.js --seite <pfad/index.html> --pruefen` ab (ohne `--pruefen`: übertragen); im Test mit
+`METERDOOR_SITE=<pfad/index.html> npm test`, sonst wird nur dieser Abgleich übersprungen.
+
+Bricht jemand den Stripe Checkout ab, führt `cancel_url` auf dieselbe Adresse mit `?pw_cancelled=1`: eine Seite
+„Zahlung abgebrochen“ (Status `402`, nichts berechnet, nichts freigeschaltet) mit dem Link „Erneut versuchen“; erst
+dieser Klick legt eine neue Checkout-Sitzung an. Eigenes Ziel: `stripe.cancelUrl` (absolute `https`-Adresse, `http`
+nur für localhost; andere Werte werden beim Start abgewiesen).
+
+Stripe Checkout-Sitzungen werden mit ausgeschaltetem Stripe Managed Payments angelegt (`managed_payments[enabled]=false`),
+weil aufgeschlagene Steuer den geprüften Betrag ändern würde; optional `stripe.taxCode` (Steuercode der Position),
+`stripe.managedPayments: true` (Parameter weglassen). Hauptnetz `base` nur mit `x402.allowMainnet: true`.
+
+## Eignung und Grenzen
+
+| Geeignet | Nicht geeignet |
+|---|---|
+| Abgeschlossene Datenantworten und Berichte (bei x402 standardmäßig bis 1 MiB je Antwort, `x402.maxResponseBytes`) | Aktionen mit Nebenwirkungen wie Bestellungen oder E-Mail-Versand: Bei x402 läuft die Route nach `/verify`, aber **vor** der endgültigen Abrechnung (`/settle`). Scheitert diese, ist die Aktion trotzdem geschehen. |
+| Endpunkte, die Menschen im Browser und Programme gleichermaßen abrufen | Streaming: Bei x402 wird die Antwort vollständig gepuffert und erst nach der Abrechnung gesendet. |
+| Erprobung im Testnetz Base Sepolia und im Stripe-Testmodus | Andere x402-Schemata als `exact` (z. B. `upto`) und Permit2: angenommen wird nur `exact` mit EIP-3009 (USDC). |
+
+- **Speicher:** `memoryStore()` (Standard) ist flüchtig: Beim Neustart gehen gespeicherte Antworten für Wiederholungen und
+  offene Fälle verloren. `fileStore({ dir })` übersteht Neustarts (mehrere Prozesse auf demselben Rechner, keine
+  Netzlaufwerke). Siehe [Speicher](#speicher).
+- **Leistung je Bezahlweg:** Euro öffnet genau einen Endpunkt für eine feste Dauer ab Zahlung; x402 bezahlt genau eine
+  Anfrage. Siehe [Was ein Kauf bedeutet](#was-ein-kauf-bedeutet).
+- **Erstattung:** x402 erstattet nicht automatisch; offene Fälle liefert `mw.openCases()`.
+
+## Funktionsübersicht
+
+Stufen: **lokal simuliert geprüft** = automatisierte Tests mit nachgebildeten Gegenstellen bestehen; **extern geprüft** =
+Test gegen den echten Testdienst bestanden (mit Datum); **geplant** = noch nicht vorhanden. Übersprungene Tests zählen
+nicht als bestanden. Alle lokalen Nachweise laufen ohne Konten und ohne Schlüssel. Stand: 25.10.2026.
+
+| Funktion | Kern/Pro | Stand | Lokaler Nachweis |
+|---|---|---|---|
+| Euro über Stripe Checkout, Zeitzugang zu einem Endpunkt | Kern | lokal simuliert geprüft; Stripe-Testmodus extern geprüft am 23.10.2026 (Sitzung anlegen, unbezahlte und unbekannte Sitzung abgelehnt, Zeitüberschreitung) | `npm test`, `npm run test:demo` |
+| USDC je Anfrage über x402 Version 1 (`X-PAYMENT`), Base Sepolia | Kern | lokal simuliert geprüft; echte Testzahlung mit `x402-fetch` gegen den öffentlichen Testnetz-Facilitator extern geprüft am 25.10.2026 (Zahlung, Auslieferung, Wiederholung ohne zweite Abrechnung) | `npm test`, `npm run test:demo` |
+| Erkennung Browser oder Agent an einem Endpunkt | Kern | lokal simuliert geprüft | `npm test`, Demo Fall 1 |
+| Wiederholung desselben Nachweises ohne neue Abrechnung | Kern | lokal simuliert geprüft | `npm test`, Demo Fall 4 |
+| Klärung unklarer Abrechnungen (`authorizationState`) | Kern | lokal simuliert geprüft | `npm test`, Demo Fall 5 |
+| Dateispeicher `fileStore` (Neustarts) | Kern | lokal simuliert geprüft | `npm test` |
+| Bindung `bindQuery` / `bindBodyHash` | Kern | lokal simuliert geprüft | `npm test` |
+| Stripe-Abbruch ohne Checkout-Schleife (`pw_cancelled`, `stripe.cancelUrl`) | Kern | lokal simuliert geprüft (ab 0.0.6) | `npm test` |
+| Paket: Installation und Import außerhalb des Repositorys | Kern | lokal geprüft (Node 20/22/24, Express 4 und 5) | `npm run test:paket` |
+| Demo ohne Schlüssel | Kern | lokal im Browser geprüft | `npm run test:demo` |
+| USDC je Anfrage über x402 Version 2 (`PAYMENT-SIGNATURE`, `PAYMENT-REQUIRED`, `PAYMENT-RESPONSE`), Base Sepolia | Kern | lokal simuliert geprüft (ab 0.0.7); echte Testzahlung mit dem offiziellen Client `@x402/fetch` 2.28 gegen den öffentlichen Testnetz-Facilitator extern geprüft am 25.10.2026 (Zahlung, Auslieferung, Wiederholung ohne zweite Abrechnung) | `npm test` |
+| Kontingente, CSV-Protokoll, Stripe-Webhook-Abgleich | Pro | lokal simuliert geprüft in der Vorabversion 0.1.0-vorab; nicht veröffentlicht, nicht ausgeliefert | nicht Teil dieses Repositorys |
+| Lieferung von Pro mit Updates und Support | Pro | geplant (Vorverkauf) | – |
+
+**Prüfberichte (historisch, mit Datum):**
+
+- 22.10.2026: `integration/` gegen den öffentlichen Testnetz-Facilitator 3/3 bestanden; Stripe und echte Testzahlung
+  damals übersprungen (keine Testzugänge).
+- 23.10.2026: `integration/` Stripe-Testmodus 3/3 bestanden, nach dem Fix für Managed Payments. Eine im Checkout
+  abgeschlossene Testzahlung ist nicht Teil des automatisierten Tests.
+- 25.10.2026: `integration/` 7/7 bestanden, 0 übersprungen, darunter die echte x402-Testzahlung auf Base Sepolia mit
+  `x402-fetch` (0,01 Test-USDC ohne Wert; Empfängerguthaben um genau 0,01 gestiegen; gleicher Nachweis erneut: gleiche
+  Antwort, eine Abrechnung).
 
 ## Demo ohne Schlüssel
 
@@ -68,11 +184,21 @@ andere Hosts als 127.0.0.1 werden abgebrochen und müssen 0 bleiben).
 
 | Anfrage | Antwort |
 |---|---|
-| mit Header `X-PAYMENT` (x402) | lokal prüfen (Netz, Empfänger, Betrag) → Facilitator `/verify` → **Ihre Route (gepuffert)** → `/settle` → Antwort mit `X-PAYMENT-RESPONSE` |
+| mit Header `PAYMENT-SIGNATURE` (x402 Version 2) oder `X-PAYMENT` (Version 1) | lokal prüfen (Netz, Empfänger, Betrag, Asset) → Facilitator `/verify` → **Ihre Route (gepuffert)** → `/settle` → Antwort mit `PAYMENT-RESPONSE` (Version 2) bzw. `X-PAYMENT-RESPONSE` (Version 1) |
 | mit gültigem Zugangstoken (Cookie `pw_token` oder `Authorization: Bearer`) | Ihre Route |
 | Rückkehr aus Stripe (`?pw_session=cs_…`) | Sitzung vollständig prüfen (s. u.), Token mit festem Ende ausgeben |
+| Rückkehr nach Abbruch (`?pw_cancelled=1`) | `402`: Seite „Zahlung abgebrochen“ mit „Erneut versuchen“ (JSON: Hinweis und `checkout`-Link), keine neue Sitzung |
 | Browser (`Accept: text/html`) oder `?pw_checkout=1` | `303` zu Stripe Checkout |
-| alles andere | `402` mit `accepts` (x402) und `checkout`-Link |
+| alles andere | `402` mit `accepts` (x402 Version 1) und `checkout`-Link im Body, dazu Header `PAYMENT-REQUIRED` (Version 2) |
+
+**x402-Versionen.** Standard ist `x402: { versions: [1, 2] }`: Beide Header werden angenommen, stehen beide da, gilt
+`PAYMENT-SIGNATURE`. Mit `versions: [2]` steht das Version-2-Objekt auch im Body und `X-PAYMENT` wird mit `402` abgewiesen;
+mit `versions: [1]` fehlt `PAYMENT-REQUIRED`. Die Anforderungen an den Facilitator baut immer die Paywall selbst, nie aus dem
+Nachweis. Dieselbe Autorisierung (Netz, Absender, Nonce) ist in beiden Versionen dieselbe Zahlung. Meldet der Facilitator
+`settlement_pending` (Transaktion gesendet, Bestätigung offen), gilt der Fall als unklar, nicht als abgelehnt, und wird beim
+nächsten Abruf über die Kette geklärt. Ein unlesbarer `PAYMENT-SIGNATURE`-Header ergibt `400`.
+Browser-Clients von fremden Domains brauchen `Access-Control-Expose-Headers: PAYMENT-REQUIRED, PAYMENT-RESPONSE` in Ihrer
+CORS-Einstellung; die Paywall setzt keine CORS-Header.
 
 `req.payment` sagt Ihrer Route, wie bezahlt wurde.
 
@@ -149,6 +275,7 @@ Facilitators verloren: `unklar`; lehnt er die Abrechnung ab, wird der Fall gelö
 
 **Offene Fälle und Erstattung.** `mw.openCases()` liefert Fälle in Abrechnung, mit unklarer Abrechnung oder mit bezahlter,
 nicht zugestellter Antwort; `onEvent` meldet jedes Ereignis (`abgerechnet`, `abrechnung_unklar`, `nicht_zugestellt`, `route_fehler` …).
+Zahlungsereignisse (`abgerechnet`, `stripe_eingeloest`) tragen `method`, `amount`, `currency`, `resource` und `transaction`.
 **x402 erstattet nicht automatisch.** Hat jemand bezahlt und die Antwort nie abgerufen, zahlen Sie den Betrag bei Bedarf von
 Ihrer Wallet an die Absenderadresse zurück (Transaktion und Absender stehen im Fall).
 
@@ -221,15 +348,25 @@ Nie ein Stack-Trace, nie „bezahlt“ ohne Bestätigung.
 
 ## Tests
 
-- `npm test` – 91 Tests mit nachgebildeten Gegenstellen und steuerbarer Uhr (`now`-Option), inkl. aller Fehlerfälle,
-  Fälschungen des Zahlungsnachweises, verzögertem Speicher mit zwei Instanzen und Neustarts mit `fileStore`.
+- `npm test` – 100 Tests mit nachgebildeten Gegenstellen und steuerbarer Uhr (`now`-Option), inkl. aller Fehlerfälle,
+  Fälschungen des Zahlungsnachweises, verzögertem Speicher mit zwei Instanzen, Neustarts mit `fileStore`, Stripe-Abbruch
+  und Start von `beispiel/schnellstart.js`. Ohne Schlüssel, ohne Netz; 1 Test (Website-Abgleich) läuft nur mit `METERDOOR_SITE`.
+- `npm run test:paket` – Paket-Probe: `npm pack`, Installation in einer separaten Beispielanwendung im temporären
+  Verzeichnis, Import der öffentlichen Exporte, simulierte Anfragen (402 und x402-Zahlung gegen nachgebildeten Facilitator).
+  Prüft auch den Paketinhalt (nur `src/`, `beispiel/schnellstart.js`, README, LICENSE) und die Lockfile-Version. Braucht
+  die npm-Registry für express. `.github/workflows/ci.yml` führt `npm test` und die Paket-Probe für Node 20/22/24 und
+  Express 4/5 aus (vorbereitet; ob er läuft, zeigt erst GitHub Actions).
 - `integration/` – gegen echte Gegenstellen: öffentlicher Facilitator (ohne Guthaben), Stripe-Testmodus und echte
-  Base-Sepolia-Zahlung mit dem unabhängigen Client `x402-fetch`. Schlüssel nur aus `.secrets/`; fehlen sie, wird übersprungen.
-  `cd integration && npm install && npm test`.
+  Base-Sepolia-Zahlung mit dem unabhängigen Client `x402-fetch`. Läuft nur mit `METERDOOR_INTEGRATION=1`; Schlüssel nur
+  aus dem angegebenen Verzeichnis `METERDOOR_SECRETS` (keine Suche in Elternverzeichnissen); fehlen sie, wird übersprungen.
+  `cd integration && npm install && METERDOOR_INTEGRATION=1 METERDOOR_SECRETS=<verzeichnis> npm test`. **Übersprungene Tests gelten nicht als bestanden**; datierte Ergebnisse unter
+  [Funktionsübersicht](#funktionsübersicht).
+- `npm run test:demo` – 13 Browser-Tests der Demo (lokales Edge oder Chrome, ohne Internet): beide Bezahlwege, Wiederholung,
+  unklare Abrechnung, Ergebnisanzeige, Tastatur, 390 px, Lade- und Fehlerzustand, Startschutz.
 
 ## Bekannte Grenzen des Prototyps
 
-- x402 Version 1 (Header `X-PAYMENT`); Version 2 folgt.
+- x402 nur Schema `exact` mit EIP-3009 auf Base und Base Sepolia; kein `upto`, kein Permit2, keine anderen Netze.
 - Ohne `app.set("trust proxy", 1)` hinter einem Proxy steht in `resource` `http` statt `https`.
 - Kontingente, CSV-Protokoll mit EUR-Gegenwert und Webhook-Abgleich sind nicht Teil des Kerns (Pro).
 

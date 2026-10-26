@@ -4,7 +4,7 @@ import express from "express";
 import { paywall, _intern } from "../src/index.js";
 
 // Nachgebildete Gegenstellen (Facilitator, Stripe, RPC) mit einstellbaren Fehlern. Kein Netz, keine Schlüssel.
-// Echte Gegenstellen: test/integration.test.js (läuft nur mit Testschlüsseln aus .secrets/).
+// Echte Gegenstellen: integration/integration.test.js (nur mit METERDOOR_INTEGRATION=1 und METERDOOR_SECRETS).
 
 export const SECRET = "geheim-nur-fuer-tests";
 export const PAY_TO = "0x0000000000000000000000000000000000000001";

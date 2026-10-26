@@ -1,7 +1,9 @@
-// Tests gegen echte Gegenstellen. Nur Testmodus und Testnetz; Schlüssel nur aus .secrets/ (nie im Repo).
-//   Stripe:  .secrets/stripe-test-key.txt (sk_test_… oder rk_test_…)
-//   x402:    .secrets/x402-testnet-wallet.json (Base Sepolia, Chain-ID 84532) mit Test-USDC beim Zahler
-// Fehlt etwas, wird der jeweilige Test übersprungen (nicht als Fehler gewertet).
+// Tests gegen echte Gegenstellen. Nur Testmodus und Testnetz; Schlüssel nie im Repo.
+// Laufen nur, wenn ausdrücklich aktiviert: METERDOOR_INTEGRATION=1. Zugangsdaten nur aus dem ausdrücklich
+// angegebenen Verzeichnis METERDOOR_SECRETS (es wird nicht in Elternverzeichnissen gesucht):
+//   Stripe:  <METERDOOR_SECRETS>/stripe-test-key.txt (sk_test_… oder rk_test_…)
+//   x402:    <METERDOOR_SECRETS>/x402-testnet-wallet.json (Base Sepolia, Chain-ID 84532) mit Test-USDC beim Zahler
+// Fehlt etwas, wird der jeweilige Test übersprungen und als übersprungen ausgewiesen (nicht als bestanden).
 // Zahlender Client ist x402-fetch (Referenz-Client von Coinbase), nicht der eigene Code.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -10,8 +12,10 @@ import path from "node:path";
 import express from "express";
 import { paywall, _intern } from "../src/index.js";
 
-const SECRETS = path.resolve(import.meta.dirname, "../../../.secrets");
-const read = (f) => { try { return fs.readFileSync(path.join(SECRETS, f), "utf8").trim(); } catch { return null; } };
+const AKTIV = process.env.METERDOOR_INTEGRATION === "1";
+const SECRETS = AKTIV && process.env.METERDOOR_SECRETS ? path.resolve(process.env.METERDOOR_SECRETS) : null;
+const read = (f) => { if (!SECRETS) return null; try { return fs.readFileSync(path.join(SECRETS, f), "utf8").trim(); } catch { return null; } };
+const AUS = !AKTIV && "nicht aktiviert (METERDOOR_INTEGRATION=1 setzen)";
 const stripeKey = read("stripe-test-key.txt");
 const wallet = (() => { try { return JSON.parse(read("x402-testnet-wallet.json")); } catch { return null; } })();
 if (stripeKey && !/^(sk|rk)_test_/.test(stripeKey)) throw new Error("Nur Stripe-Testschlüssel erlaubt");
@@ -51,7 +55,7 @@ function unsignedPayment(payTo) {
   });
 }
 
-describe("Stripe-Testmodus", { skip: stripeKey ? false : "kein .secrets/stripe-test-key.txt" }, () => {
+describe("Stripe-Testmodus", { skip: AUS || (stripeKey ? false : "kein stripe-test-key.txt in METERDOOR_SECRETS") }, () => {
   const mw = () => paywall({
     price: { eur: "0.50" },
     stripe: { key: stripeKey, metadata: { venture: "v18" } },
@@ -88,7 +92,7 @@ describe("Stripe-Testmodus", { skip: stripeKey ? false : "kein .secrets/stripe-t
   });
 });
 
-describe("x402 Base Sepolia, öffentlicher Facilitator (ohne Guthaben)", () => {
+describe("x402 Base Sepolia, öffentlicher Facilitator (ohne Guthaben)", { skip: AUS }, () => {
   const payTo = wallet?.empfaenger.address || "0x000000000000000000000000000000000000dEaD";
 
   test("ungültige Signatur: echter Facilitator lehnt ab, 402, Route läuft nicht", async () => {
@@ -119,7 +123,7 @@ describe("x402 Base Sepolia, öffentlicher Facilitator (ohne Guthaben)", () => {
 
 const funded = wallet ? await usdcBalance(wallet.zahler.address).catch(() => 0n) : 0n;
 describe("x402 Base Sepolia, echte Testzahlung mit x402-fetch", {
-  skip: !wallet ? "kein .secrets/x402-testnet-wallet.json" : funded < 20000n ? `Zahler ${wallet.zahler.address} hat < 0,02 Test-USDC` : false,
+  skip: AUS || (!wallet ? "keine x402-testnet-wallet.json in METERDOOR_SECRETS" : funded < 20000n ? `Zahler ${wallet.zahler.address} hat < 0,02 Test-USDC` : false),
 }, () => {
   test("zahlen, ausliefern, gleichen Nachweis erneut: gleiche Antwort ohne zweite Abrechnung", async () => {
     const { wrapFetchWithPayment, createSigner, decodeXPaymentResponse } = await import("x402-fetch");
@@ -139,8 +143,48 @@ describe("x402 Base Sepolia, echte Testzahlung mit x402-fetch", {
     const body = await r.json();
     const receipt = decodeXPaymentResponse(r.headers.get("x-payment-response"));
     assert.match(receipt.transaction, /^0x[0-9a-f]{64}$/i);
+    console.log(`[integration] Testzahlung Base Sepolia: ${receipt.transaction}`);
     assert.equal(await usdcBalance(wallet.empfaenger.address) - before, 10000n);
     const again = await fetch(`${app.base}/api/bericht`, { headers: { "x-payment": sent[0] } });
+    assert.equal(again.status, 200);
+    assert.deepEqual(await again.json(), body);
+    assert.equal(events.filter((e) => e.type === "abgerechnet").length, 1);
+    await app.close();
+  });
+
+  // Version 2 mit dem offiziellen Client @x402/fetch 2.x (liest PAYMENT-REQUIRED, sendet PAYMENT-SIGNATURE).
+  test("x402 v2 mit @x402/fetch: zahlen, PAYMENT-RESPONSE, gleichen Nachweis erneut ohne zweite Abrechnung", async () => {
+    const { wrapFetchWithPaymentFromConfig, decodePaymentResponseHeader } = await import("@x402/fetch");
+    const { ExactEvmScheme } = await import("@x402/evm");
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const events = [];
+    const app = await serve(paywall({
+      price: { usdc: "0.01" },
+      x402: { payTo: wallet.empfaenger.address, network: "base-sepolia", timeoutMs: 30000 },
+      onEvent: (e) => events.push(e),
+    }), (req, res) => res.json({ daten: "Testbericht", version: req.payment?.version }));
+    const sent = [];
+    const recording = (input, init = {}) => {
+      const h = new Headers(input instanceof Request ? input.headers : init.headers);
+      if (h.get("payment-signature")) sent.push(h.get("payment-signature"));
+      assert.equal(h.get("x-payment"), null);
+      return fetch(input, init);
+    };
+    const pay = wrapFetchWithPaymentFromConfig(recording, {
+      schemes: [{ network: "eip155:84532", client: new ExactEvmScheme(privateKeyToAccount(wallet.zahler.privateKey)) }],
+    });
+    const before = await usdcBalance(wallet.empfaenger.address);
+    const r = await pay(`${app.base}/api/bericht`);
+    assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.version, 2);
+    const receipt = decodePaymentResponseHeader(r.headers.get("payment-response"));
+    assert.equal(receipt.network, "eip155:84532");
+    assert.match(receipt.transaction, /^0x[0-9a-f]{64}$/i);
+    console.log(`[integration] Testzahlung v2 Base Sepolia: ${receipt.transaction}`);
+    assert.equal(await usdcBalance(wallet.empfaenger.address) - before, 10000n);
+    assert.equal(sent.length, 1);
+    const again = await fetch(`${app.base}/api/bericht`, { headers: { "payment-signature": sent[0] } });
     assert.equal(again.status, 200);
     assert.deepEqual(await again.json(), body);
     assert.equal(events.filter((e) => e.type === "abgerechnet").length, 1);

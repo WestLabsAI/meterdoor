@@ -1,10 +1,13 @@
 // Schreibt beispiel/schnellstart.js als Codeblock in site/index.html (eine Quelle für Website und Test).
-// Aufruf: node werkzeuge/site-beispiel.js [--pruefen]   (--pruefen: nur vergleichen, Exit 1 bei Abweichung)
+// Aufruf: node werkzeuge/site-beispiel.js --seite <pfad/zu/index.html> [--pruefen]
+//   (--pruefen: nur vergleichen, Exit 1 bei Abweichung; statt --seite auch METERDOOR_SITE=<pfad>)
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const kern = path.resolve(import.meta.dirname, "..");
-const seite = path.resolve(kern, "../../site/index.html");
+const kern = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const arg = process.argv.indexOf("--seite");
+const seiteAngabe = arg > 0 ? process.argv[arg + 1] : process.env.METERDOOR_SITE;
 const START = "<!-- schnellstart:anfang -->";
 const ENDE = "<!-- schnellstart:ende -->";
 
@@ -25,12 +28,15 @@ export function ausSeite(html) {
   return pre.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&") + "\n";
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  if (!seiteAngabe) { console.error("Seite angeben: --seite <pfad/zu/index.html> oder METERDOOR_SITE"); process.exit(2); }
+  const seite = path.resolve(seiteAngabe);
   const code = fs.readFileSync(path.join(kern, "beispiel/schnellstart.js"), "utf8");
   const html = fs.readFileSync(seite, "utf8");
   if (!html.includes(START) || !html.includes(ENDE)) throw new Error("Marker fehlen in site/index.html");
   if (process.argv.includes("--pruefen")) {
-    const gleich = ausSeite(html) === code;
+    const lf = (t) => t.replace(/\r\n/g, "\n"); // Git checkt unter Windows mit CRLF aus (wie im Test)
+    const gleich = lf(ausSeite(html)) === lf(code);
     console.log(gleich ? "Website-Beispiel = beispiel/schnellstart.js" : "ABWEICHUNG");
     process.exit(gleich ? 0 : 1);
   }

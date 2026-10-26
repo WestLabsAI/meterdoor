@@ -2,7 +2,15 @@
   "name": "meterdoor-integration",
   "private": true,
   "type": "module",
-  "description": "Tests gegen echte Gegenstellen: Stripe-Testmodus und Base Sepolia mit unabhängigem x402-Client (x402-fetch). Schlüssel nur aus .secrets/.",
-  "scripts": { "test": "node --test integration.test.js" },
-  "devDependencies": { "express": "^4.21.0", "x402-fetch": "1.2.0", "viem": "^2.21.26" }
+  "description": "Tests gegen echte Gegenstellen: Stripe-Testmodus und Base Sepolia mit unabhängigem x402-Client (x402-fetch). Nur mit METERDOOR_INTEGRATION=1; Schlüssel nur aus METERDOOR_SECRETS.",
+  "scripts": {
+    "test": "node --test integration.test.js"
+  },
+  "devDependencies": {
+    "@x402/evm": "^2.28.0",
+    "@x402/fetch": "^2.28.0",
+    "express": "^4.21.0",
+    "viem": "^2.21.26",
+    "x402-fetch": "1.2.0"
+  }
 }

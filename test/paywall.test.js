@@ -157,7 +157,7 @@ describe("2. Token ist an Methode und vollen Pfad gebunden", () => {
     assert.equal(r402.accepts[0].resource, `${app.base}/premium/bericht`);
     const s = await checkout(app, "/premium/bericht");
     assert.equal(s.success_url, `${app.base}/premium/bericht?pw_session={CHECKOUT_SESSION_ID}`);
-    assert.equal(s.cancel_url, `${app.base}/premium/bericht`);
+    assert.equal(s.cancel_url, `${app.base}/premium/bericht?pw_cancelled=1`); // seit 0.0.6: Abbruchseite statt Schleife
     const r = await fetch(`${app.base}/premium/bericht?pw_session=${s.id}`, { headers: { accept: "text/html" }, redirect: "manual" });
     assert.equal(r.status, 303);
     assert.equal(r.headers.get("location"), "/premium/bericht");

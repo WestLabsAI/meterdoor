@@ -1,5 +1,5 @@
 // Meterdoor: ein Endpunkt, zwei Bezahlwege.
-// Menschen zahlen in EUR über Stripe Checkout, KI-Agenten in USDC über x402 (Version 1).
+// Menschen zahlen in EUR über Stripe Checkout, KI-Agenten in USDC über x402 (Version 1 und 2, Schema exact, EIP-3009).
 // Das Geld geht direkt an das Stripe-Konto bzw. die Wallet des Betreibers; diese Bibliothek
 // verwahrt, tauscht oder leitet nichts weiter und betreibt keinen Facilitator.
 
@@ -9,15 +9,17 @@ import { memoryStore, fileStore, StoreFullError, OPEN_STATES, STORE_DEFAULTS } f
 export { memoryStore, fileStore, StoreFullError };
 
 // USDC-Verträge (6 Nachkommastellen) und EIP-712-Domänen laut x402-Referenzimplementierung.
-// rpcUrl dient nur zum Lesen (authorizationState), nie zum Senden.
+// rpcUrl dient nur zum Lesen (authorizationState), nie zum Senden. caip2 = Netzkennung in x402 Version 2.
 export const NETWORKS = {
   "base": {
+    caip2: "eip155:8453",
     asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     extra: { name: "USD Coin", version: "2" },
     testnet: false,
     rpcUrl: "https://mainnet.base.org",
   },
   "base-sepolia": {
+    caip2: "eip155:84532",
     asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     extra: { name: "USDC", version: "2" },
     testnet: true,
@@ -26,6 +28,8 @@ export const NETWORKS = {
 };
 
 const STRIPE_API = "https://api.stripe.com/v1";
+// Stripe: höchstens 999.999,99 € je Zahlung (gleiche Grenze wie Meterdoor Pro).
+const STRIPE_MAX_CENTS = 99_999_999n;
 const DEFAULT_FACILITATOR = "https://x402.org/facilitator";
 const TOKEN_VERSION = "v2";
 // EIP-3009 authorizationState(address,bytes32)
@@ -126,6 +130,20 @@ function readCookie(req, name) {
   return null;
 }
 
+const escapeHtml = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// stripe.cancelUrl: absolute https-Adresse (http nur für localhost/127.0.0.1), ohne Zugangsdaten und Steuerzeichen.
+function checkCancelUrl(value) {
+  if (value === undefined) return undefined;
+  const fail = () => { throw new Error("paywall: stripe.cancelUrl muss eine absolute https-Adresse sein (http nur für localhost)"); };
+  if (typeof value !== "string" || !value || /[\s\x00-\x1f\x7f]/.test(value)) fail();
+  let u;
+  try { u = new URL(value); } catch { fail(); }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  if (!(u.protocol === "https:" || (u.protocol === "http:" && local)) || u.username || u.password) fail();
+  return u.href;
+}
+
 function wantsHtml(req) {
   return (req.headers.accept || "").includes("text/html");
 }
@@ -151,6 +169,8 @@ export function paywall(options) {
   }
   const centsEur = price.eur ? toUnits(price.eur, 2) : null;
   if (centsEur !== null && centsEur < 50n) throw new Error("paywall: Stripe verlangt mindestens 0.50 EUR je Zahlung");
+  if (centsEur !== null && centsEur > STRIPE_MAX_CENTS) throw new Error("paywall: Stripe erlaubt höchstens 999999.99 EUR je Zahlung");
+  const cancelTarget = price.eur ? checkCancelUrl(stripe.cancelUrl) : undefined;
   const cents = centsEur === null ? null : Number(centsEur);
   const unitsUsdc = price.usdc ? toUnits(price.usdc, 6).toString() : null;
   const facilitator = (x402?.facilitatorUrl || DEFAULT_FACILITATOR).replace(/\/$/, "");
@@ -162,6 +182,13 @@ export function paywall(options) {
   const x402Timeout = x402?.timeoutMs ?? 10000;
   const routeTimeout = x402?.routeTimeoutMs ?? 30000;
   const replaySeconds = x402?.replaySeconds ?? 3600;
+  // x402-Versionen, die angenommen werden: 1 (Header X-PAYMENT) und/oder 2 (Header PAYMENT-SIGNATURE). Standard beide.
+  const versions = x402?.versions ?? [1, 2];
+  if (!Array.isArray(versions) || versions.length === 0 || versions.some((v) => v !== 1 && v !== 2)) {
+    throw new Error("paywall: x402.versions muss eine Liste aus 1 und/oder 2 sein");
+  }
+  const v1 = versions.includes(1);
+  const v2 = versions.includes(2);
   const posInt = (v, name) => { if (!Number.isInteger(v) || v <= 0) throw new Error(`paywall: ${name} muss eine positive ganze Zahl sein`); return v; };
   // Grenzen mit sicheren Standardwerten.
   const maxResponseBytes = posInt(x402?.maxResponseBytes ?? 1024 * 1024, "x402.maxResponseBytes");
@@ -183,6 +210,8 @@ export function paywall(options) {
   // Testschlüssel dürfen nur Testsitzungen freischalten, Live-Schlüssel nur Live-Sitzungen.
   const expectLivemode = /^(sk|rk)_live_/.test(stripe?.key || "") ? true : /^(sk|rk)_test_/.test(stripe?.key || "") ? false : undefined;
   const emit = (e) => { try { onEvent({ at: new Date(now()).toISOString(), ...e }); } catch { /* Protokoll darf nie stören */ } };
+  // Gemeinsame Felder aller x402-Ereignisse zu einem Nachweis (id = Kennung der Zahlung, stabil über Wiederholungen).
+  const x402Fields = (rec) => ({ method: "x402", id: rec.id, amount: String(price.usdc), currency: "USDC", resource: rec.binding });
   if (unitsUsdc && !canClaim) {
     emit({ type: "speicher_ohne_sperre", problem: true, detail: "x402.store hat kein claim/release: nur eine Instanz sicher (mehrere Instanzen können doppelt ausführen)" });
   }
@@ -231,10 +260,51 @@ export function paywall(options) {
     };
   }
 
-  function send402(req, res, error) {
-    const body = { x402Version: 1, error, accepts: unitsUsdc ? [requirements(req)] : [] };
+  // Version 2: Netz als CAIP-2, Betrag als amount, Ressource getrennt (ResourceInfo).
+  function requirementsV2(req) {
+    return {
+      scheme: "exact",
+      network: net.caip2,
+      amount: unitsUsdc,
+      asset: net.asset,
+      payTo: x402.payTo,
+      maxTimeoutSeconds: x402.maxTimeoutSeconds ?? 60,
+      extra: net.extra,
+    };
+  }
+  const requirementsFor = (version, req) => (version === 2 ? requirementsV2(req) : requirements(req));
+  const resourceInfo = (req) => ({ url: resourceUrl(req), description, mimeType: "application/json" });
+
+  // 402 für beide Versionen: Body im Format von Version 1 (wenn angenommen), dazu Header PAYMENT-REQUIRED (Version 2).
+  // Nimmt die Paywall nur Version 2 an, steht das PaymentRequired-Objekt von Version 2 auch im Body.
+  function paymentRequired(req, error) {
+    const headers = {};
+    let body;
+    if (unitsUsdc && v2) {
+      const pr = { x402Version: 2, error, resource: resourceInfo(req), accepts: [requirementsV2(req)] };
+      headers["PAYMENT-REQUIRED"] = b64json(pr);
+      if (!v1) body = pr;
+    }
+    body ||= { x402Version: 1, error, accepts: unitsUsdc ? [requirements(req)] : [] };
     if (centsEur !== null) body.checkout = withParam(resourceUrl(req), "pw_checkout=1");
-    res.status(402).json(body);
+    return { body, headers };
+  }
+
+  function send402(req, res, error) {
+    const { body, headers } = paymentRequired(req, error);
+    res.status(402).set(headers).json(body);
+  }
+
+  // Abbruchseite: 402, weil weiterhin nichts bezahlt ist. Browser bekommen eine kurze Seite mit „Erneut versuchen“
+  // (relativer Link auf dieselbe Ressource mit pw_checkout=1), alle anderen JSON wie bei send402.
+  function sendCancelled(req, res) {
+    emit({ type: "stripe_abgebrochen", resource: bindingOf(req) });
+    const retry = withParam(fullPath(req) + ownQuery(req), "pw_checkout=1");
+    if (!wantsHtml(req)) return send402(req, res, "Checkout abgebrochen; nichts wurde berechnet");
+    res.status(402).set("Cache-Control", "no-store").type("html").send(`<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Zahlung abgebrochen</title></head>
+<body><main><h1>Zahlung abgebrochen</h1><p>Sie haben den Checkout abgebrochen. Es wurde nichts berechnet und nichts freigeschaltet.</p>
+<p><a href="${escapeHtml(retry)}">Erneut versuchen</a></p></main></body></html>`);
   }
 
   function sendUpstreamError(res, err) {
@@ -275,7 +345,9 @@ export function paywall(options) {
       // außer ausdrücklich gewünscht. Konten mit Managed Payments als Standard lehnen sonst ab („product tax code is missing“).
       ...(stripe.managedPayments ? {} : { "managed_payments[enabled]": "false" }),
       success_url: withParam(resourceUrl(req), "pw_session={CHECKOUT_SESSION_ID}"),
-      cancel_url: resourceUrl(req),
+      // Abbruch führt nie zurück auf den geschützten Endpunkt ohne Kennzeichen (sonst sofort neuer Checkout):
+      // eigenes Ziel (stripe.cancelUrl) oder dieselbe Adresse mit pw_cancelled=1 (Abbruchseite).
+      cancel_url: cancelTarget || withParam(resourceUrl(req), "pw_cancelled=1"),
       ...(stripe.metadata ? Object.fromEntries(Object.entries(stripe.metadata).map(([k, v]) => [`metadata[${k}]`, String(v)])) : {}),
       "metadata[pw_resource]": binding,
       "metadata[pw_ttl]": String(ttl),
@@ -330,18 +402,20 @@ export function paywall(options) {
     const t = signToken(access.secret, binding, check.expiresAt);
     const maxAge = check.expiresAt * 1000 - nowMs;
     res.cookie(cookieFor(binding), t, { httpOnly: true, secure: req.secure, sameSite: "lax", maxAge, path: fullPath(req) });
-    emit({ type: "stripe_eingeloest", id: sessionId, detail: binding });
+    emit({ type: "stripe_eingeloest", method: "stripe", id: sessionId, amount: String(price.eur), currency: "EUR", resource: binding,
+      transaction: typeof data.payment_intent === "object" ? data.payment_intent.id : data.payment_intent, detail: binding });
     if (wantsHtml(req)) return res.redirect(303, fullPath(req) + ownQuery(req));
     return res.json({ token: t, expiresAt: new Date(check.expiresAt * 1000).toISOString(), expiresIn: Math.floor(maxAge / 1000) });
   }
 
   // ---------- x402 ----------
 
-  async function facilitatorCall(endpoint, paymentPayload, paymentRequirements) {
+  // Die Anforderungen baut immer die Paywall selbst (nie aus dem Nachweis übernommen); Version wie im Nachweis.
+  async function facilitatorCall(endpoint, parsed, paymentRequirements) {
     const { status, ok, data } = await callJson(fetchImpl, "Facilitator", `${facilitator}/${endpoint}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ x402Version: 1, paymentPayload, paymentRequirements }),
+      body: JSON.stringify({ x402Version: parsed.version, paymentPayload: parsed.payload, paymentRequirements }),
     }, x402Timeout);
     // Eine fachliche Ablehnung (isValid/success = false) ist eine Antwort, kein Ausfall.
     const verdict = endpoint === "verify" ? data?.isValid : data?.success;
@@ -364,10 +438,25 @@ export function paywall(options) {
     return BigInt(body.result === "0x" ? 0 : body.result) !== 0n;
   }
 
-  function parsePayment(header) {
+  // Version 1: scheme/network oben im Nachweis. Version 2: gewählte Anforderung in `accepted`, Netz als CAIP-2.
+  function parsePayment(header, version) {
     let payload;
-    try { payload = fromB64json(header); } catch { return { error: "X-PAYMENT ist kein gültiges Base64-JSON" }; }
-    if (payload?.x402Version !== 1 || payload.network !== network || payload.scheme !== "exact") return { error: "Version, Netzwerk oder Schema passt nicht" };
+    try { payload = fromB64json(header); } catch {
+      return { error: `${version === 2 ? "PAYMENT-SIGNATURE" : "X-PAYMENT"} ist kein gültiges Base64-JSON`, malformed: true };
+    }
+    if (version === 1) {
+      if (payload?.x402Version !== 1 || payload.network !== network || payload.scheme !== "exact") return { error: "Version, Netzwerk oder Schema passt nicht" };
+    } else {
+      const acc = payload?.accepted;
+      if (payload?.x402Version !== 2 || !acc || typeof acc !== "object" || acc.scheme !== "exact" || acc.network !== net.caip2) {
+        return { error: "Version, Netzwerk oder Schema passt nicht" };
+      }
+      const method = acc.extra?.assetTransferMethod;
+      if (method !== undefined && method !== "eip3009") return { error: "nur assetTransferMethod eip3009 wird angenommen" };
+      if (String(acc.asset || "").toLowerCase() !== net.asset.toLowerCase()) return { error: "falsches Asset" };
+      if (String(acc.payTo || "").toLowerCase() !== x402.payTo.toLowerCase()) return { error: "Zahlung geht an eine andere Adresse" };
+      if (acc.amount !== unitsUsdc) return { error: "Betrag passt nicht zur Anforderung" };
+    }
     const auth = payload.payload?.authorization;
     const hex = (v, n) => typeof v === "string" && new RegExp(`^0x[0-9a-fA-F]{${n}}$`).test(v);
     const uint = (v) => /^\d+$/.test(String(v));
@@ -376,7 +465,8 @@ export function paywall(options) {
     }
     if (auth.to.toLowerCase() !== x402.payTo.toLowerCase()) return { error: "Zahlung geht an eine andere Adresse" };
     if (BigInt(auth.value) < BigInt(unitsUsdc)) return { error: "Betrag zu niedrig" };
-    return { payload, auth, id: `${network}:${auth.from.toLowerCase()}:${auth.nonce.toLowerCase()}`, fingerprint: fingerprintOf(payload, auth) };
+    // Kennung unabhängig von der Version: dieselbe Autorisierung (Netz + Absender + Nonce) ist dieselbe Zahlung.
+    return { payload, auth, version, id: `${network}:${auth.from.toLowerCase()}:${auth.nonce.toLowerCase()}`, fingerprint: fingerprintOf(payload, auth) };
   }
 
   // Fingerabdruck des vollständigen Nachweises: SHA-256 über eine kanonische Form mit Signatur und allen
@@ -386,7 +476,7 @@ export function paywall(options) {
     const lc = (v) => String(v).toLowerCase();
     const sig = payload.payload?.signature;
     return sha256hex(JSON.stringify([
-      "meterdoor-nachweis-v1", payload.x402Version, payload.scheme, network, lc(net.asset),
+      "meterdoor-nachweis-v1", payload.x402Version, payload.scheme ?? payload.accepted?.scheme, network, lc(net.asset),
       lc(auth.from), lc(auth.to), BigInt(auth.value).toString(), BigInt(auth.validAfter).toString(),
       BigInt(auth.validBefore).toString(), lc(auth.nonce), typeof sig === "string" ? lc(sig) : null,
     ]));
@@ -451,8 +541,13 @@ export function paywall(options) {
   function replyFromRecord(res, rec, send = (fn) => fn()) {
     send(() => {
       for (const name of res.getHeaderNames()) res.removeHeader(name);
-      for (const [k, v] of Object.entries(rec.response.headers)) if (k !== "x-payment-response") res.setHeader(k, v);
-      res.setHeader("X-PAYMENT-RESPONSE", b64json({ success: true, transaction: rec.transaction || null, network, payer: rec.payer }));
+      for (const [k, v] of Object.entries(rec.response.headers)) if (k !== "x-payment-response" && k !== "payment-response") res.setHeader(k, v);
+      // Fälle ohne version stammen aus Version 1 (Altbestand).
+      if (rec.version === 2) {
+        res.setHeader("PAYMENT-RESPONSE", b64json({ success: true, transaction: rec.transaction || "", network: net.caip2, payer: rec.payer }));
+      } else {
+        res.setHeader("X-PAYMENT-RESPONSE", b64json({ success: true, transaction: rec.transaction || null, network, payer: rec.payer }));
+      }
       res.statusCode = rec.response.status;
       res.end(Buffer.from(rec.response.body, "base64"));
     });
@@ -487,36 +582,39 @@ export function paywall(options) {
   async function resolveUnclear(req, res, rec, parsed) {
     let used;
     try { used = await nonceUsedOnChain(parsed.auth); } catch (err) {
-      emit({ type: "abrechnung_unklar", problem: true, id: rec.id, detail: err.message });
+      emit({ type: "abrechnung_unklar", problem: true, ...x402Fields(rec), detail: err.message });
       return replyJson(res, 503, { error: "Zahlungsstatus noch unklar; nichts wird doppelt berechnet, bitte mit demselben Nachweis erneut versuchen" }, undefined, { "Retry-After": "10" });
     }
     if (used) {
-      emit({ type: "abrechnung_geklaert", id: rec.id });
+      emit({ type: "abrechnung_geklaert", ...x402Fields(rec) });
       return replyFromRecord(res, await markPaid(rec));
     }
     if (Number(parsed.auth.validBefore) * 1000 + 60000 < now()) {
       await store.delete(rec.id);
-      emit({ type: "abrechnung_verfallen", id: rec.id });
+      emit({ type: "abrechnung_verfallen", ...x402Fields(rec) });
       return send402(req, res, "Zahlung wurde nicht ausgeführt und die Autorisierung ist abgelaufen");
     }
     // Noch gültig und nicht eingelöst: erneut abrechnen (dieselbe Nonce kann höchstens einmal eingelöst werden).
     try {
-      const settled = await facilitatorCall("settle", parsed.payload, requirements(req));
-      if (settled.success) return replyFromRecord(res, await markPaid(rec, settled));
-    } catch (err) { emit({ type: "abrechnung_unklar", problem: true, id: rec.id, detail: err.message }); }
+      const settled = await facilitatorCall("settle", parsed, requirementsFor(parsed.version, req));
+      if (settled.success) {
+        emit({ type: "abgerechnet", ...x402Fields(rec), transaction: settled.transaction, detail: settled.transaction });
+        return replyFromRecord(res, await markPaid(rec, settled));
+      }
+    } catch (err) { emit({ type: "abrechnung_unklar", problem: true, ...x402Fields(rec), detail: err.message }); }
     if (rec.state !== "unklar") await storeQuietly(() => store.set(rec.id, { ...rec, state: "unklar" }, replaySeconds), rec.id);
     return replyJson(res, 503, { error: "Zahlungsstatus noch unklar; bitte mit demselben Nachweis erneut versuchen" }, undefined, { "Retry-After": "10" });
   }
 
   async function firstUse(req, res, next, parsed) {
-    const reqs = requirements(req);
-    const verified = await facilitatorCall("verify", parsed.payload, reqs);
+    const reqs = requirementsFor(parsed.version, req);
+    const verified = await facilitatorCall("verify", parsed, reqs);
     if (!verified.isValid) return send402(req, res, verified.invalidReason || "Zahlung ungültig");
 
     // Erst die Leistung, dann die Abrechnung: Scheitert die Route, wird nichts berechnet.
     let aborted = false;
     res.once("close", () => { if (!res.writableFinished) aborted = true; });
-    req.payment = { method: "x402", network, amount: unitsUsdc, payer: verified.payer || parsed.auth.from, id: parsed.id };
+    req.payment = { method: "x402", version: parsed.version, network, amount: unitsUsdc, payer: verified.payer || parsed.auth.from, id: parsed.id };
     const out = await runBuffered(req, res, next);
     try {
       return await afterRoute(req, res, parsed, reqs, out, () => aborted);
@@ -549,7 +647,7 @@ export function paywall(options) {
     // expiresAt steht ab hier fest und beginnt bei Zustandsänderungen nicht neu.
     const t = now();
     const rec = {
-      id: parsed.id, binding: parsed.binding, state: "in_abrechnung", fingerprint: parsed.fingerprint,
+      id: parsed.id, version: parsed.version, binding: parsed.binding, state: "in_abrechnung", fingerprint: parsed.fingerprint,
       payer: req.payment.payer, delivered: false,
       createdAt: new Date(t).toISOString(), expiresAt: new Date(t + replaySeconds * 1000).toISOString(),
       response: { status: out.status, headers: out.headers, body: out.body.toString("base64") },
@@ -564,26 +662,38 @@ export function paywall(options) {
       }, out.pass, { "Retry-After": full ? "30" : "5" });
     }
     let settled;
-    try { settled = await facilitatorCall("settle", parsed.payload, reqs); } catch (err) {
-      if (!(err instanceof UpstreamError)) throw err;
-      emit({ type: "abrechnung_unklar", problem: true, id: rec.id, detail: err.message });
+    const unclear = async (detail) => {
+      emit({ type: "abrechnung_unklar", problem: true, ...x402Fields(rec), detail });
       await storeQuietly(() => store.set(rec.id, { ...rec, state: "unklar" }, replaySeconds), rec.id);
       return replyJson(res, 503, { error: "Zahlungsstatus unklar; nichts wird doppelt berechnet, bitte mit demselben Nachweis erneut versuchen" }, out.pass, { "Retry-After": "10" });
+    };
+    try { settled = await facilitatorCall("settle", parsed, reqs); } catch (err) {
+      if (!(err instanceof UpstreamError)) throw err;
+      return unclear(err.message);
     }
+    // settlement_pending (Version 2): Transaktion gesendet, Bestätigung offen – keine Ablehnung, sondern unklar.
+    if (!settled.success && settled.errorReason === "settlement_pending") return unclear(`settlement_pending ${settled.transaction || ""}`.trim());
     if (!settled.success) {
       await storeQuietly(() => store.delete(rec.id), rec.id);
-      emit({ type: "abrechnung_abgelehnt", id: rec.id, detail: settled.errorReason });
-      return replyJson(res, 402, { x402Version: 1, error: settled.errorReason || "Abrechnung fehlgeschlagen", accepts: [reqs] }, out.pass);
+      emit({ type: "abrechnung_abgelehnt", ...x402Fields(rec), detail: settled.errorReason });
+      const { body, headers } = paymentRequired(req, settled.errorReason || "Abrechnung fehlgeschlagen");
+      return replyJson(res, 402, body, out.pass, headers);
     }
     req.payment.transaction = settled.transaction;
-    emit({ type: "abgerechnet", id: rec.id, detail: settled.transaction });
+    emit({ type: "abgerechnet", ...x402Fields(rec),
+      transaction: settled.transaction, detail: settled.transaction });
     return replyFromRecord(res, await markPaid(rec, settled), out.pass);
   }
 
   // Synchron bis zur Sperre: parsePayment, Grenze und pending.set laufen ohne await, damit zwei gleichzeitige
   // Anfragen mit demselben Nachweis nie beide am Speicher vorbeikommen.
-  function handleX402(req, res, next, header) {
-    const parsed = parsePayment(header);
+  function handleX402(req, res, next, header, version) {
+    const parsed = parsePayment(header, version);
+    // Version 2 (HTTP-Transport): unlesbarer Nachweis = 400, sonst 402 mit den Anforderungen.
+    if (parsed.malformed && version === 2) {
+      const { headers } = paymentRequired(req, parsed.error);
+      return res.status(400).set(headers).json({ x402Version: 2, error: parsed.error });
+    }
     if (parsed.error) return send402(req, res, parsed.error);
     parsed.binding = bindingOf(req); // wirft bei fehlerhafter Bindung (z. B. bindBodyHash ohne Body) vor jeder Prüfung
     if (active >= maxConcurrent) {
@@ -630,7 +740,7 @@ export function paywall(options) {
       }
       if (rec.binding !== parsed.binding) return send402(req, res, "Zahlungsnachweis wurde bereits für eine andere Ressource verwendet");
       if (rec.state === "bezahlt") {
-        emit({ type: "wiederholt_ausgeliefert", id: rec.id });
+        emit({ type: "wiederholt_ausgeliefert", ...x402Fields(rec) });
         return replyFromRecord(res, rec);
       }
       return await resolveUnclear(req, res, rec, parsed);
@@ -664,9 +774,17 @@ export function paywall(options) {
 
   const middleware = async function paywallMiddleware(req, res, next) {
     try {
-      // 1. x402: Agent schickt eine signierte Zahlung im Header X-PAYMENT.
-      const header = req.get("x-payment");
-      if (header && unitsUsdc) return await handleX402(req, res, next, header);
+      // 1. x402: Agent schickt eine signierte Zahlung im Header PAYMENT-SIGNATURE (Version 2) oder X-PAYMENT (Version 1).
+      //    Stehen beide da, gilt PAYMENT-SIGNATURE. Ein Header einer abgeschalteten Version wird mit 402 beantwortet.
+      if (unitsUsdc) {
+        const h2 = req.get("payment-signature");
+        const h1 = h2 ? undefined : req.get("x-payment");
+        if (h2 || h1) {
+          const version = h2 ? 2 : 1;
+          if (!versions.includes(version)) return send402(req, res, `x402 Version ${version} wird hier nicht angenommen`);
+          return await handleX402(req, res, next, h2 || h1, version);
+        }
+      }
 
       if (centsEur !== null) {
         // 2. Gültiges Zugangstoken aus einem Stripe-Kauf (Cookie oder Bearer).
@@ -682,11 +800,15 @@ export function paywall(options) {
         const sessionId = req.query?.pw_session;
         if (typeof sessionId === "string" && /^cs_[A-Za-z0-9_]+$/.test(sessionId)) return await redeemSession(req, res, sessionId);
 
-        // 4. Mensch im Browser oder ausdrücklicher Wunsch nach Checkout: weiter zu Stripe.
+        // 4. Rückkehr nach Abbruch im Checkout: Abbruchzustand anzeigen, keine neue Sitzung, nichts freischalten.
+        //    Ein neuer Versuch beginnt erst mit dem Link „Erneut versuchen“ (?pw_checkout=1).
+        if (req.query?.pw_cancelled === "1" && req.query?.pw_checkout !== "1") return sendCancelled(req, res);
+
+        // 5. Mensch im Browser oder ausdrücklicher Wunsch nach Checkout: weiter zu Stripe.
         if (wantsHtml(req) || req.query?.pw_checkout === "1") return res.redirect(303, await checkoutUrl(req));
       }
 
-      // 5. Sonst: 402 mit beiden Wegen.
+      // 6. Sonst: 402 mit beiden Wegen.
       return send402(req, res, "Zahlung erforderlich");
     } catch (err) {
       if (err instanceof UpstreamError) {
