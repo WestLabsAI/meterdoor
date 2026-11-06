@@ -84,12 +84,20 @@ describe("nicht antwortende Gegenstelle", () => {
     await assert.rejects(timed(fetch, 5000)(url, { signal: outer.signal }), /vom Aufrufer abgebrochen/, "vorhandenes Signal bleibt wirksam");
   });
 
-  test("serve(): Server ist nach dem Test geschlossen, auch wenn der Test fehlschlägt", async (t) => {
+  // Ohne Untertest mit `expectFailure` (gibt es erst ab Node 24): Der Kontext sammelt die after-Hooks und führt sie wie
+  // node:test nach dem Fehlschlag aus. Dass node:test das wirklich tut, prüft der Kindprozess-Test oben.
+  test("serve(): Server ist nach dem Test geschlossen, auch wenn der Test fehlschlägt", async () => {
+    const hooks = [];
     let base;
-    await t.test("innerer Test schlägt fehl", { expectFailure: true }, async (tt) => {
-      base = (await serve(tt, paywall({ price: { usdc: "0.50" }, x402: { payTo: "0x0000000000000000000000000000000000000001", network: "base-sepolia" } }))).base;
-      assert.equal((await fetch(`${base}/api/bericht`)).status, 200);
-    });
+    try {
+      base = (await serve({ after: (fn) => hooks.push(fn) }, paywall({ price: { usdc: "0.50" }, x402: { payTo: "0x0000000000000000000000000000000000000001", network: "base-sepolia" } }))).base;
+      assert.equal((await fetch(`${base}/api/bericht`)).status, 200, "absichtlicher Fehlschlag");
+      assert.fail("Server hätte 402 liefern müssen");
+    } catch (e) {
+      assert.match(e.message, /absichtlicher Fehlschlag/);
+    } finally {
+      for (const fn of hooks) await fn();
+    }
     await assert.rejects(timed(fetch, 2000)(`${base}/api/bericht`), "Port nimmt keine Verbindungen mehr an");
   });
 });
