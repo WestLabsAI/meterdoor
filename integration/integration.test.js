@@ -9,8 +9,11 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import express from "express";
 import { paywall, _intern } from "../src/index.js";
+import { serve, timed } from "./serve.js";
+
+// Jeder Aufruf mit fester Zeitgrenze; Server werden über serve(t, …) auch nach einem Fehlschlag geschlossen.
+const tfetch = timed();
 
 const AKTIV = process.env.METERDOOR_INTEGRATION === "1";
 const SECRETS = AKTIV && process.env.METERDOOR_SECRETS ? path.resolve(process.env.METERDOOR_SECRETS) : null;
@@ -26,19 +29,12 @@ const RPC = "https://sepolia.base.org";
 
 async function usdcBalance(address) {
   const data = "0x70a08231" + address.slice(2).toLowerCase().padStart(64, "0");
-  const r = await fetch(RPC, {
+  const r = await tfetch(RPC, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: USDC_SEPOLIA, data }, "latest"] }),
     signal: AbortSignal.timeout(10000),
   });
   return BigInt((await r.json()).result);
-}
-
-async function serve(mw, handler = (req, res) => res.json({ daten: "Testbericht", bezahltMit: req.payment?.method })) {
-  const app = express();
-  app.get("/api/bericht", mw, handler);
-  const server = await new Promise((r) => { const sv = app.listen(0, () => r(sv)); });
-  return { base: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) };
 }
 
 // Ein formal vollständiger, aber nicht gültig signierter Nachweis (für Ablehnungs- und Fehlerfälle, ohne Guthaben).
@@ -63,61 +59,55 @@ describe("Stripe-Testmodus", { skip: AUS || (stripeKey ? false : "kein stripe-te
     description: "Beispielbericht (Testmodus)",
   });
 
-  test("Checkout wird angelegt; unbezahlte echte Sitzung öffnet nichts", async () => {
-    const app = await serve(mw());
-    const r = await fetch(`${app.base}/api/bericht?pw_checkout=1`, { headers: { accept: "application/json" }, redirect: "manual" });
+  test("Checkout wird angelegt; unbezahlte echte Sitzung öffnet nichts", async (t) => {
+    const app = await serve(t, mw());
+    const r = await tfetch(`${app.base}/api/bericht?pw_checkout=1`, { headers: { accept: "application/json" }, redirect: "manual" });
     assert.equal(r.status, 303);
     const loc = r.headers.get("location");
     assert.match(loc, /^https:\/\/checkout\.stripe\.com\//);
     const id = loc.match(/cs_test_[A-Za-z0-9]+/)[0];
-    const r2 = await fetch(`${app.base}/api/bericht?pw_session=${id}`, { headers: { accept: "application/json" } });
+    const r2 = await tfetch(`${app.base}/api/bericht?pw_session=${id}`, { headers: { accept: "application/json" } });
     assert.equal(r2.status, 402); // 402 statt 502 heißt auch: Stripe akzeptiert die expand-Parameter
     assert.match((await r2.json()).error, /nicht bezahlt/);
-    await app.close();
   });
 
-  test("unbekannte Sitzung: 402, nicht 500", async () => {
-    const app = await serve(mw());
-    const r = await fetch(`${app.base}/api/bericht?pw_session=cs_test_gibtesnicht123`, { headers: { accept: "application/json" } });
+  test("unbekannte Sitzung: 402, nicht 500", async (t) => {
+    const app = await serve(t, mw());
+    const r = await tfetch(`${app.base}/api/bericht?pw_session=cs_test_gibtesnicht123`, { headers: { accept: "application/json" } });
     assert.equal(r.status, 402);
-    await app.close();
   });
 
-  test("Zeitüberschreitung gegenüber Stripe: 503 mit Retry-After", async () => {
-    const app = await serve(paywall({ price: { eur: "0.50" }, stripe: { key: stripeKey, timeoutMs: 1 }, access: { secret: "x" } }));
-    const r = await fetch(`${app.base}/api/bericht?pw_checkout=1`, { headers: { accept: "application/json" }, redirect: "manual" });
+  test("Zeitüberschreitung gegenüber Stripe: 503 mit Retry-After", async (t) => {
+    const app = await serve(t, paywall({ price: { eur: "0.50" }, stripe: { key: stripeKey, timeoutMs: 1 }, access: { secret: "x" } }));
+    const r = await tfetch(`${app.base}/api/bericht?pw_checkout=1`, { headers: { accept: "application/json" }, redirect: "manual" });
     assert.equal(r.status, 503);
     assert.equal(r.headers.get("retry-after"), "5");
-    await app.close();
   });
 });
 
 describe("x402 Base Sepolia, öffentlicher Facilitator (ohne Guthaben)", { skip: AUS }, () => {
   const payTo = wallet?.empfaenger.address || "0x000000000000000000000000000000000000dEaD";
 
-  test("ungültige Signatur: echter Facilitator lehnt ab, 402, Route läuft nicht", async () => {
+  test("ungültige Signatur: echter Facilitator lehnt ab, 402, Route läuft nicht", async (t) => {
     let ran = false;
-    const app = await serve(paywall({ price: { usdc: "0.01" }, x402: { payTo, network: "base-sepolia" } }), (req, res) => { ran = true; res.json({}); });
-    const r = await fetch(`${app.base}/api/bericht`, { headers: { "x-payment": unsignedPayment(payTo) } });
+    const app = await serve(t, paywall({ price: { usdc: "0.01" }, x402: { payTo, network: "base-sepolia" } }), (req, res) => { ran = true; res.json({}); });
+    const r = await tfetch(`${app.base}/api/bericht`, { headers: { "x-payment": unsignedPayment(payTo) } });
     assert.equal(r.status, 402);
     assert.ok((await r.json()).error);
     assert.equal(ran, false);
-    await app.close();
   });
 
-  test("Facilitator-Adresse liefert HTML: 502, kein Stack-Trace", async () => {
-    const app = await serve(paywall({ price: { usdc: "0.01" }, x402: { payTo, network: "base-sepolia", facilitatorUrl: "https://example.com" } }));
-    const r = await fetch(`${app.base}/api/bericht`, { headers: { "x-payment": unsignedPayment(payTo) } });
+  test("Facilitator-Adresse liefert HTML: 502, kein Stack-Trace", async (t) => {
+    const app = await serve(t, paywall({ price: { usdc: "0.01" }, x402: { payTo, network: "base-sepolia", facilitatorUrl: "https://example.com" } }));
+    const r = await tfetch(`${app.base}/api/bericht`, { headers: { "x-payment": unsignedPayment(payTo) } });
     assert.ok([502, 503].includes(r.status), `Status ${r.status}`);
     assert.doesNotMatch(await r.text(), /at .*\.js/);
-    await app.close();
   });
 
-  test("Facilitator antwortet nicht rechtzeitig: 503", async () => {
-    const app = await serve(paywall({ price: { usdc: "0.01" }, x402: { payTo, network: "base-sepolia", timeoutMs: 1 } }));
-    const r = await fetch(`${app.base}/api/bericht`, { headers: { "x-payment": unsignedPayment(payTo) } });
+  test("Facilitator antwortet nicht rechtzeitig: 503", async (t) => {
+    const app = await serve(t, paywall({ price: { usdc: "0.01" }, x402: { payTo, network: "base-sepolia", timeoutMs: 1 } }));
+    const r = await tfetch(`${app.base}/api/bericht`, { headers: { "x-payment": unsignedPayment(payTo) } });
     assert.equal(r.status, 503);
-    await app.close();
   });
 });
 
@@ -125,16 +115,16 @@ const funded = wallet ? await usdcBalance(wallet.zahler.address).catch(() => 0n)
 describe("x402 Base Sepolia, echte Testzahlung mit x402-fetch", {
   skip: AUS || (!wallet ? "keine x402-testnet-wallet.json in METERDOOR_SECRETS" : funded < 20000n ? `Zahler ${wallet.zahler.address} hat < 0,02 Test-USDC` : false),
 }, () => {
-  test("zahlen, ausliefern, gleichen Nachweis erneut: gleiche Antwort ohne zweite Abrechnung", async () => {
+  test("zahlen, ausliefern, gleichen Nachweis erneut: gleiche Antwort ohne zweite Abrechnung", async (t) => {
     const { wrapFetchWithPayment, createSigner, decodeXPaymentResponse } = await import("x402-fetch");
     const events = [];
-    const app = await serve(paywall({
+    const app = await serve(t, paywall({
       price: { usdc: "0.01" },
       x402: { payTo: wallet.empfaenger.address, network: "base-sepolia", timeoutMs: 30000 },
       onEvent: (e) => events.push(e),
     }));
     const sent = [];
-    const recording = (url, init = {}) => { const h = new Headers(init.headers); if (h.get("x-payment")) sent.push(h.get("x-payment")); return fetch(url, init); };
+    const recording = (url, init = {}) => { const h = new Headers(init.headers); if (h.get("x-payment")) sent.push(h.get("x-payment")); return tfetch(url, init); };
     const signer = await createSigner("base-sepolia", wallet.zahler.privateKey);
     const pay = wrapFetchWithPayment(recording, signer, 20000n);
     const before = await usdcBalance(wallet.empfaenger.address);
@@ -145,20 +135,19 @@ describe("x402 Base Sepolia, echte Testzahlung mit x402-fetch", {
     assert.match(receipt.transaction, /^0x[0-9a-f]{64}$/i);
     console.log(`[integration] Testzahlung Base Sepolia: ${receipt.transaction}`);
     assert.equal(await usdcBalance(wallet.empfaenger.address) - before, 10000n);
-    const again = await fetch(`${app.base}/api/bericht`, { headers: { "x-payment": sent[0] } });
+    const again = await tfetch(`${app.base}/api/bericht`, { headers: { "x-payment": sent[0] } });
     assert.equal(again.status, 200);
     assert.deepEqual(await again.json(), body);
     assert.equal(events.filter((e) => e.type === "abgerechnet").length, 1);
-    await app.close();
   });
 
   // Version 2 mit dem offiziellen Client @x402/fetch 2.x (liest PAYMENT-REQUIRED, sendet PAYMENT-SIGNATURE).
-  test("x402 v2 mit @x402/fetch: zahlen, PAYMENT-RESPONSE, gleichen Nachweis erneut ohne zweite Abrechnung", async () => {
+  test("x402 v2 mit @x402/fetch: zahlen, PAYMENT-RESPONSE, gleichen Nachweis erneut ohne zweite Abrechnung", async (t) => {
     const { wrapFetchWithPaymentFromConfig, decodePaymentResponseHeader } = await import("@x402/fetch");
     const { ExactEvmScheme } = await import("@x402/evm");
     const { privateKeyToAccount } = await import("viem/accounts");
     const events = [];
-    const app = await serve(paywall({
+    const app = await serve(t, paywall({
       price: { usdc: "0.01" },
       x402: { payTo: wallet.empfaenger.address, network: "base-sepolia", timeoutMs: 30000 },
       onEvent: (e) => events.push(e),
@@ -168,7 +157,7 @@ describe("x402 Base Sepolia, echte Testzahlung mit x402-fetch", {
       const h = new Headers(input instanceof Request ? input.headers : init.headers);
       if (h.get("payment-signature")) sent.push(h.get("payment-signature"));
       assert.equal(h.get("x-payment"), null);
-      return fetch(input, init);
+      return tfetch(input, init);
     };
     const pay = wrapFetchWithPaymentFromConfig(recording, {
       schemes: [{ network: "eip155:84532", client: new ExactEvmScheme(privateKeyToAccount(wallet.zahler.privateKey)) }],
@@ -184,10 +173,9 @@ describe("x402 Base Sepolia, echte Testzahlung mit x402-fetch", {
     console.log(`[integration] Testzahlung v2 Base Sepolia: ${receipt.transaction}`);
     assert.equal(await usdcBalance(wallet.empfaenger.address) - before, 10000n);
     assert.equal(sent.length, 1);
-    const again = await fetch(`${app.base}/api/bericht`, { headers: { "payment-signature": sent[0] } });
+    const again = await tfetch(`${app.base}/api/bericht`, { headers: { "payment-signature": sent[0] } });
     assert.equal(again.status, 200);
     assert.deepEqual(await again.json(), body);
     assert.equal(events.filter((e) => e.type === "abgerechnet").length, 1);
-    await app.close();
   });
 });

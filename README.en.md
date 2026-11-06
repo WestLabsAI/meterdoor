@@ -1,4 +1,4 @@
-# Meterdoor (prototype 0.0.7)
+# Meterdoor (prototype 0.1.0)
 
 [Deutsch](README.md) · [Website](https://meterdoor.com)
 
@@ -6,8 +6,8 @@ Express middleware: **one endpoint, two ways to pay.** Humans in a browser pay i
 other software pay in USDC via [x402](https://www.x402.org/) (versions 1 and 2, scheme `exact` with EIP-3009). Payments are processed by your
 Stripe account or an x402 facilitator and go straight to you; Meterdoor itself never holds, exchanges or forwards funds.
 
-> Status: prototype for the Base Sepolia testnet and Stripe test mode. Source public, **not published on npm** (install
-> from this repository). Test status: see [Feature overview](#feature-overview). Not part of any official x402, Coinbase
+> Status: prototype for the Base Sepolia testnet and Stripe test mode. Source public, package on npm
+> (`npm install meterdoor`). Test status: see [Feature overview](#feature-overview). Not part of any official x402, Coinbase
 > or Stripe product.
 
 ## Quick start
@@ -15,7 +15,9 @@ Stripe account or an x402 facilitator and go straight to you; Meterdoor itself n
 Requirements: Node.js 20 or newer with npm, Git. Installation, demo and integration are separate steps; the demo needs no
 accounts and no keys.
 
-### 1. Install (from this repository)
+### 1. Get the demo (from this repository)
+
+The demo is only in the repository, not in the npm package:
 
 ```
 git clone https://github.com/WestLabsAI/meterdoor
@@ -37,13 +39,15 @@ Then open `http://127.0.0.1:8402/`. Everything is simulated and no money moves; 
 ### 3. Add it to your own Express app
 
 Meterdoor is an **ES module**: your `package.json` needs `"type": "module"` (or use a `.mjs` file). Tested with Node.js 20.20, 22.23 and 24.19 and Express 4.22 (all tests); Express 5.3 only with the package check (`npm run test:paket -- --express 5`).
-In your app's folder, next to the cloned `meterdoor` folder:
+In your app's folder:
 
 ```
 npm init -y                  # only for a new app
 npm pkg set type=module
-npm install express@4 ../meterdoor
+npm install express@4 meterdoor
 ```
+
+Installing from the cloned folder also works: `npm install express@4 ../meterdoor`.
 
 `server.js` (the same code is shown on the website; prices are examples):
 
@@ -131,7 +135,7 @@ local checks run without accounts or keys. As of 2026-10-25.
 | Package: install and import outside this repository | Core | tested locally (Node 20/22/24, Express 4 and 5) | `npm run test:paket` |
 | Demo without keys | Core | tested locally in a browser | `npm run test:demo` |
 | USDC per request via x402 version 2 (`PAYMENT-SIGNATURE`, `PAYMENT-REQUIRED`, `PAYMENT-RESPONSE`), Base Sepolia | Core | tested locally (simulated, since 0.0.7); real test payment with the official client `@x402/fetch` 2.28 against the public testnet facilitator tested externally on 2026-10-25 (payment, delivery, replay without a second settlement) | `npm test` |
-| Quotas, CSV log, Stripe webhook reconciliation | Pro | tested locally (simulated) in pre-release 0.1.0-vorab; not published, not delivered | not part of this repository |
+| Quotas, CSV log, Stripe webhook reconciliation | Pro | tested locally (simulated) in pre-release 0.1.0-vorab.4; not published, not delivered | not part of this repository |
 | Delivery of Pro with updates and support | Pro | planned (pre-sale) | – |
 
 **Test reports (historical, dated):** 2026-10-22: `integration/` against the public testnet facilitator 3/3 passed;
@@ -205,14 +209,16 @@ Details (German): [README.md](README.md).
 
 ## Tests
 
-- `npm test` – 100 tests against emulated counterparts with a controllable clock, no keys, no network; 1 test (website
-  comparison) runs only with `METERDOOR_SITE=<path/index.html>`.
+- `npm test` – 120 tests against emulated counterparts with a controllable clock, no keys, no network; 1 test (website
+  comparison) runs only with `METERDOOR_SITE=<path/index.html>`. Every test has a 60 s time limit; `test/haenger.test.js`
+  reproduces that a failing test with an open server ends the process in bounded time with an error status.
 - `npm run test:paket` – package check: `npm pack`, install into a separate sample app in a temporary directory, import the
   public exports, simulated requests; also checks package contents and the lockfile version. Needs the npm registry for
   express. `.github/workflows/ci.yml` runs `npm test` and the package check for Node 20/22/24 and Express 4/5 (prepared;
   only GitHub Actions will show whether it passes).
 - `integration/` – against real test services; runs only with `METERDOOR_INTEGRATION=1`, keys only from the directory given
-  in `METERDOOR_SECRETS` (no lookup in parent directories). Skipped tests do not count as passed.
+  in `METERDOOR_SECRETS` (no lookup in parent directories). Skipped tests do not count as passed. Servers are closed via
+  `integration/serve.js` even after a failure; every outside call has a 30 s limit, every test 180 s.
 - `npm run test:demo` – 13 browser tests of the demo (local Edge or Chrome, offline).
 
 ## License

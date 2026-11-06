@@ -8,5 +8,6 @@ import { spawnSync } from "node:child_process";
 
 const kern = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dateien = fs.readdirSync(path.join(kern, "test")).filter((f) => f.endsWith(".test.js")).sort().map((f) => path.join("test", f));
-const r = spawnSync(process.execPath, ["--test", ...process.argv.slice(2), ...dateien], { cwd: kern, stdio: "inherit" });
+// Feste Zeitgrenze je Test (überschreibbar mit --test-timeout=…), damit ein Hänger als Fehler endet.
+const r = spawnSync(process.execPath, ["--test", "--test-timeout=60000", ...process.argv.slice(2), ...dateien], { cwd: kern, stdio: "inherit" });
 process.exit(r.status ?? 1);

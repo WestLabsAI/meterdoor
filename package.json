@@ -1,8 +1,28 @@
 {
   "name": "meterdoor",
-  "version": "0.0.7",
-  "private": true,
-  "description": "Express-Middleware: ein Endpunkt, Euro per Stripe Checkout für Menschen und USDC per x402 für KI-Agenten (Prototyp)",
+  "version": "0.1.0",
+  "description": "Express middleware: one endpoint, EUR via Stripe Checkout for humans and USDC via x402 (v1 and v2) for AI agents (prototype, testnet)",
+  "keywords": [
+    "x402",
+    "express",
+    "middleware",
+    "stripe",
+    "paywall",
+    "usdc",
+    "http-402",
+    "payments",
+    "ai-agents"
+  ],
+  "homepage": "https://meterdoor.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WestLabsAI/meterdoor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WestLabsAI/meterdoor/issues",
+    "email": "info@meterdoor.com"
+  },
+  "author": "Meterdoor <info@meterdoor.com> (https://meterdoor.com)",
   "type": "module",
   "main": "src/index.js",
   "exports": "./src/index.js",
@@ -28,6 +48,7 @@
     "beispiel/schnellstart.js",
     "README.md",
     "README.en.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ]
 }

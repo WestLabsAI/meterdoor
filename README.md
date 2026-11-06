@@ -1,4 +1,4 @@
-# Meterdoor (Prototyp 0.0.7)
+# Meterdoor (Prototyp 0.1.0)
 
 [English](README.en.md) · [Website](https://meterdoor.com)
 
@@ -7,8 +7,8 @@ KI-Agenten zahlen in USDC über [x402](https://www.x402.org/) (Version 1 und 2, 
 Stripe-Konto bzw. einen x402-Facilitator; das Geld geht direkt an Sie. Meterdoor selbst verwahrt, tauscht oder leitet kein
 Geld weiter.
 
-> Status: Prototyp für das Testnetz Base Sepolia und den Stripe-Testmodus. Quellcode öffentlich, **kein npm-Paket
-> veröffentlicht** (Installation aus diesem Repository). Stand der Prüfungen siehe [Funktionsübersicht](#funktionsübersicht).
+> Status: Prototyp für das Testnetz Base Sepolia und den Stripe-Testmodus. Quellcode öffentlich, Paket auf npm
+> (`npm install meterdoor`). Stand der Prüfungen siehe [Funktionsübersicht](#funktionsübersicht).
 > Kein Teil eines offiziellen x402-, Coinbase- oder Stripe-Produkts.
 
 ## Schnellstart
@@ -16,7 +16,9 @@ Geld weiter.
 Voraussetzungen: Node.js 20 oder neuer mit npm, Git. Installation, Demo und Einbindung sind getrennte Schritte; für die
 Demo brauchen Sie keine Konten und keine Schlüssel.
 
-### 1. Installieren (aus dem Repository)
+### 1. Demo holen (aus dem Repository)
+
+Die Demo liegt nur im Repository, nicht im npm-Paket:
 
 ```
 git clone https://github.com/WestLabsAI/meterdoor
@@ -39,13 +41,15 @@ Dann `http://127.0.0.1:8402/` im Browser öffnen. Alles ist simuliert, es fließ
 
 Meterdoor ist ein **ES-Modul**: Ihr `package.json` braucht `"type": "module"` (oder die Datei endet auf `.mjs`).
 Geprüft mit Node.js 20.20, 22.23 und 24.19 und Express 4.22 (alle Tests); Express 5.3 nur mit der Paket-Probe
-(`npm run test:paket -- --express 5`). Im Ordner Ihrer App, der neben dem geklonten Ordner `meterdoor` liegt:
+(`npm run test:paket -- --express 5`). Im Ordner Ihrer App:
 
 ```
 npm init -y                  # nur bei einer neuen App
 npm pkg set type=module
-npm install express@4 ../meterdoor
+npm install express@4 meterdoor
 ```
+
+Statt aus npm geht auch der geklonte Ordner: `npm install express@4 ../meterdoor`.
 
 `server.js` (derselbe Code steht auf der Website; Preise sind Beispielwerte):
 
@@ -138,8 +142,10 @@ nicht als bestanden. Alle lokalen Nachweise laufen ohne Konten und ohne Schlüss
 | Paket: Installation und Import außerhalb des Repositorys | Kern | lokal geprüft (Node 20/22/24, Express 4 und 5) | `npm run test:paket` |
 | Demo ohne Schlüssel | Kern | lokal im Browser geprüft | `npm run test:demo` |
 | USDC je Anfrage über x402 Version 2 (`PAYMENT-SIGNATURE`, `PAYMENT-REQUIRED`, `PAYMENT-RESPONSE`), Base Sepolia | Kern | lokal simuliert geprüft (ab 0.0.7); echte Testzahlung mit dem offiziellen Client `@x402/fetch` 2.28 gegen den öffentlichen Testnetz-Facilitator extern geprüft am 25.10.2026 (Zahlung, Auslieferung, Wiederholung ohne zweite Abrechnung) | `npm test` |
-| Kontingente, CSV-Protokoll, Stripe-Webhook-Abgleich | Pro | lokal simuliert geprüft in der Vorabversion 0.1.0-vorab; nicht veröffentlicht, nicht ausgeliefert | nicht Teil dieses Repositorys |
+| Kontingente, CSV-Protokoll, Stripe-Webhook-Abgleich | Pro | lokal simuliert geprüft in der Vorabversion 0.1.0-vorab.4; nicht veröffentlicht, nicht ausgeliefert | nicht Teil dieses Repositorys |
 | Lieferung von Pro mit Updates und Support | Pro | geplant (Vorverkauf) | – |
+| x402-Prüfer als Kommandozeilenwerkzeug: Datei/stdin, JSON und HTML, Exitcodes, Prüfbericht mit Maßnahmen, Vergleich zweier Prüfstände | Werkzeug | lokal geprüft (Browser und CLI gleich für alle Fixtures, Edge); noch nicht veröffentlicht | nicht Teil dieses Repositorys |
+| Betriebsdiagnose (offene Fälle, Protokoll, Konflikte, Summen je Währung), Integrationsdiagnose, bereinigtes Diagnosepaket, gemeinsame Demo Kern + Pro | Kern + Pro | lokal simuliert geprüft; nicht gegen echte Dienste; noch nicht veröffentlicht | nicht Teil dieses Repositorys |
 
 **Prüfberichte (historisch, mit Datum):**
 
@@ -275,7 +281,8 @@ Facilitators verloren: `unklar`; lehnt er die Abrechnung ab, wird der Fall gelö
 
 **Offene Fälle und Erstattung.** `mw.openCases()` liefert Fälle in Abrechnung, mit unklarer Abrechnung oder mit bezahlter,
 nicht zugestellter Antwort; `onEvent` meldet jedes Ereignis (`abgerechnet`, `abrechnung_unklar`, `nicht_zugestellt`, `route_fehler` …).
-Zahlungsereignisse (`abgerechnet`, `stripe_eingeloest`) tragen `method`, `amount`, `currency`, `resource` und `transaction`.
+Zahlungsereignisse (`abgerechnet`, `stripe_eingeloest`) tragen `method`, `amount`, `currency`, `resource`, `transaction` und
+`occurred_at` (ISO-Zeit der Zahlung: bei Stripe die Belastung, bei x402 die bestätigte Abrechnung; `at` ist der Zeitpunkt des Ereignisses).
 **x402 erstattet nicht automatisch.** Hat jemand bezahlt und die Antwort nie abgerufen, zahlen Sie den Betrag bei Bedarf von
 Ihrer Wallet an die Absenderadresse zurück (Transaktion und Absender stehen im Fall).
 
@@ -348,9 +355,11 @@ Nie ein Stack-Trace, nie „bezahlt“ ohne Bestätigung.
 
 ## Tests
 
-- `npm test` – 100 Tests mit nachgebildeten Gegenstellen und steuerbarer Uhr (`now`-Option), inkl. aller Fehlerfälle,
+- `npm test` – 120 Tests mit nachgebildeten Gegenstellen und steuerbarer Uhr (`now`-Option), inkl. aller Fehlerfälle,
   Fälschungen des Zahlungsnachweises, verzögertem Speicher mit zwei Instanzen, Neustarts mit `fileStore`, Stripe-Abbruch
   und Start von `beispiel/schnellstart.js`. Ohne Schlüssel, ohne Netz; 1 Test (Website-Abgleich) läuft nur mit `METERDOOR_SITE`.
+  Jeder Test hat eine Zeitgrenze von 60 s; `test/haenger.test.js` stellt nach, dass ein fehlschlagender Test bei offenem
+  Server den Prozess in fester Zeit mit Fehlerstatus beendet und eine stumme Gegenstelle zu einem begrenzten 503 führt.
 - `npm run test:paket` – Paket-Probe: `npm pack`, Installation in einer separaten Beispielanwendung im temporären
   Verzeichnis, Import der öffentlichen Exporte, simulierte Anfragen (402 und x402-Zahlung gegen nachgebildeten Facilitator).
   Prüft auch den Paketinhalt (nur `src/`, `beispiel/schnellstart.js`, README, LICENSE) und die Lockfile-Version. Braucht
@@ -359,6 +368,8 @@ Nie ein Stack-Trace, nie „bezahlt“ ohne Bestätigung.
 - `integration/` – gegen echte Gegenstellen: öffentlicher Facilitator (ohne Guthaben), Stripe-Testmodus und echte
   Base-Sepolia-Zahlung mit dem unabhängigen Client `x402-fetch`. Läuft nur mit `METERDOOR_INTEGRATION=1`; Schlüssel nur
   aus dem angegebenen Verzeichnis `METERDOOR_SECRETS` (keine Suche in Elternverzeichnissen); fehlen sie, wird übersprungen.
+  Server werden über `integration/serve.js` auch nach einem Fehlschlag geschlossen, jeder Aufruf nach außen hat eine
+  Zeitgrenze (30 s), jeder Test 180 s.
   `cd integration && npm install && METERDOOR_INTEGRATION=1 METERDOOR_SECRETS=<verzeichnis> npm test`. **Übersprungene Tests gelten nicht als bestanden**; datierte Ergebnisse unter
   [Funktionsübersicht](#funktionsübersicht).
 - `npm run test:demo` – 13 Browser-Tests der Demo (lokales Edge oder Chrome, ohne Internet): beide Bezahlwege, Wiederholung,

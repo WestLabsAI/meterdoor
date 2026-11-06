@@ -384,7 +384,7 @@ export function paywall(options) {
     if (!Number.isInteger(paidAt)) return no("Zahlungszeitpunkt fehlt");
     const expiresAt = paidAt + soldTtl;
     if (expiresAt * 1000 <= nowMs) return no("gekaufte Zugangsdauer ist abgelaufen");
-    return { ok: true, expiresAt };
+    return { ok: true, expiresAt, paidAt };
   }
 
   async function redeemSession(req, res, sessionId) {
@@ -403,7 +403,8 @@ export function paywall(options) {
     const maxAge = check.expiresAt * 1000 - nowMs;
     res.cookie(cookieFor(binding), t, { httpOnly: true, secure: req.secure, sameSite: "lax", maxAge, path: fullPath(req) });
     emit({ type: "stripe_eingeloest", method: "stripe", id: sessionId, amount: String(price.eur), currency: "EUR", resource: binding,
-      transaction: typeof data.payment_intent === "object" ? data.payment_intent.id : data.payment_intent, detail: binding });
+      transaction: typeof data.payment_intent === "object" ? data.payment_intent.id : data.payment_intent,
+      occurred_at: new Date(check.paidAt * 1000).toISOString(), detail: binding });
     if (wantsHtml(req)) return res.redirect(303, fullPath(req) + ownQuery(req));
     return res.json({ token: t, expiresAt: new Date(check.expiresAt * 1000).toISOString(), expiresIn: Math.floor(maxAge / 1000) });
   }
@@ -598,7 +599,8 @@ export function paywall(options) {
     try {
       const settled = await facilitatorCall("settle", parsed, requirementsFor(parsed.version, req));
       if (settled.success) {
-        emit({ type: "abgerechnet", ...x402Fields(rec), transaction: settled.transaction, detail: settled.transaction });
+        emit({ type: "abgerechnet", ...x402Fields(rec), transaction: settled.transaction,
+          occurred_at: new Date(now()).toISOString(), detail: settled.transaction });
         return replyFromRecord(res, await markPaid(rec, settled));
       }
     } catch (err) { emit({ type: "abrechnung_unklar", problem: true, ...x402Fields(rec), detail: err.message }); }
@@ -680,8 +682,9 @@ export function paywall(options) {
       return replyJson(res, 402, body, out.pass, headers);
     }
     req.payment.transaction = settled.transaction;
+    // occurred_at = Zeitpunkt der bestätigten Abrechnung (der Facilitator liefert keinen Blockzeitpunkt).
     emit({ type: "abgerechnet", ...x402Fields(rec),
-      transaction: settled.transaction, detail: settled.transaction });
+      transaction: settled.transaction, occurred_at: new Date(now()).toISOString(), detail: settled.transaction });
     return replyFromRecord(res, await markPaid(rec, settled), out.pass);
   }
 
