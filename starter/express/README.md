@@ -37,6 +37,11 @@ Started without any of them, the app still runs and shows a setup hint on `/` in
 
 ## Deploy
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/anaJFd)
+
+One click on Railway: the template asks for `WALLET` (Base Sepolia address), leaves `STRIPE_KEY` optional and generates
+`ACCESS_SECRET` for you. Railway bills its usage to your own Railway account.
+
 Any Node 20.6+ host works. `railway.json` sets the start command and the health check `/health`;
 on Railway, set the variables above in the service settings. Use a single instance: the starter keeps payment state
 in memory (`memoryStore()`, lost on restart). To survive restarts on one machine, pass `fileStore({ dir })` from
