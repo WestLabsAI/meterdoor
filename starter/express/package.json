@@ -1,0 +1,21 @@
+{
+  "name": "meterdoor-starter-express",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Starter: an Express API that charges humans in EUR (Stripe Checkout) and AI agents in USDC (x402) on the same endpoint. Testnet prototype.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "meterdoor": "0.1.0"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "license": "Apache-2.0"
+}
