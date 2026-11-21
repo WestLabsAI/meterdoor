@@ -37,7 +37,7 @@ Started without any of them, the app still runs and shows a setup hint on `/` in
 
 ## Deploy
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/anaJFd)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/meterdoor-starter-eur-usdc-x402-on-one-e)
 
 One click on Railway: the template asks for `WALLET` (Base Sepolia address), leaves `STRIPE_KEY` optional and generates
 `ACCESS_SECRET` for you. Railway bills its usage to your own Railway account.
